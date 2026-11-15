@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 # Replace with your actual Telegram bot username (without '@')
-TELEGRAM_BOT_USERNAME = "YOUR_BOT_USERNAME"
+TELEGRAM_BOT_USERNAME = "learnpulse_cse_bot"
 TELEGRAM_BOT_URL = f"https://t.me/{TELEGRAM_BOT_USERNAME}"
 
 # Load API key silently from Streamlit Secrets or Environment (no user input needed)
