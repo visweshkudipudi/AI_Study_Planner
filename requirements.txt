@@ -6,3 +6,4 @@ plotly>=5.24
 icalendar>=6.1
 pydantic>=2.9
 streamlit-autorefresh>=1.0.1
+python-telegram-bot>=21.0
