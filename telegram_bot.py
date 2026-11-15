@@ -16,24 +16,28 @@ from telegram.ext import (
 # ==========================================
 # 1. Configuration & Permanent Cloud DB
 # ==========================================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-MONGO_URI = os.getenv("MONGO_URI")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+MONGO_USER = os.getenv("MONGO_USER", "").strip()
+MONGO_PASS = os.getenv("MONGO_PASS", "").strip()
+MONGO_HOST = os.getenv("MONGO_HOST", "").strip()
 
-if not TELEGRAM_TOKEN or not GROQ_API_KEY or not MONGO_URI:
+if not all([TELEGRAM_TOKEN, GROQ_API_KEY, MONGO_USER, MONGO_PASS, MONGO_HOST]):
     raise RuntimeError(
-        "Missing TELEGRAM_TOKEN, GROQ_API_KEY, or MONGO_URI in Render Environment!"
+        "Missing TELEGRAM_TOKEN, GROQ_API_KEY, MONGO_USER, MONGO_PASS, or MONGO_HOST in Render Environment!"
     )
 
 client = Groq(api_key=GROQ_API_KEY)
 MODEL_NAME = "openai/gpt-oss-20b"
 
-# Fast 3-second timeout so bot NEVER freezes silently if DB has an issue
 mongo_client = MongoClient(
-    MONGO_URI,
-    serverSelectionTimeoutMS=3000,
-    connectTimeoutMS=3000,
-    socketTimeoutMS=3000,
+    f"mongodb+srv://{MONGO_HOST}/?retryWrites=true&w=majority",
+    username=MONGO_USER,
+    password=MONGO_PASS,
+    authSource="admin",
+    serverSelectionTimeoutMS=5000,
+    connectTimeoutMS=5000,
+    socketTimeoutMS=5000,
 )
 db = mongo_client["learnpulse_os"]
 users_col = db["user_profiles"]
@@ -49,6 +53,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"LearnPulse OS 2.0 Bot is alive!")
+
+    def log_message(self, format, *args):
+        return
 
 
 def start_health_server():
@@ -163,8 +170,7 @@ async def receive_studying(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text(
-            f"⚠️ <b>MongoDB Save Failed:</b>\n<code>{err}</code>\n\n"
-            "Check your <code>MONGO_URI</code> password and Network Access (0.0.0.0/0).",
+            f"⚠️ <b>MongoDB Save Failed:</b>\n<code>{err}</code>",
             parse_mode="HTML",
         )
     return ConversationHandler.END
@@ -181,9 +187,15 @@ async def cancel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def db_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         mongo_client.admin.command("ping")
-        await update.message.reply_text("✅ <b>MongoDB Cloud Connected!</b> Ping succeeded.", parse_mode="HTML")
+        await update.message.reply_text(
+            "✅ <b>MongoDB Cloud Connected!</b> Ping succeeded.",
+            parse_mode="HTML",
+        )
     except Exception as e:
-        await update.message.reply_text(f"❌ <b>MongoDB Error:</b>\n<code>{e}</code>", parse_mode="HTML")
+        await update.message.reply_text(
+            f"❌ <b>MongoDB Error:</b>\n<code>{e}</code>",
+            parse_mode="HTML",
+        )
 
 
 async def view_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
