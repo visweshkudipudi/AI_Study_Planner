@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta, timezone
+import pandas as pd
 import streamlit as st
 from groq import Groq
 
@@ -62,7 +63,6 @@ def parse_uploaded_txt(content: str) -> list[dict]:
         if "|" in line and not line.startswith("="):
             date_part, rest = line.split("|", 1)
             date_str = date_part.strip()
-            # Strip trailing status parentheses like "(20 days left)" if present
             title_str = rest.rsplit("(", 1)[0].strip() if "(" in rest else rest.strip()
             try:
                 datetime.strptime(date_str, "%Y-%m-%d")
@@ -168,11 +168,11 @@ tab_planner, tab_rebalancer, tab_calendar = st.tabs(
 )
 
 # ------------------------------------------
-# TAB 1: Weighted Subject Priority Planner
+# TAB 1: Weighted Subject Priority Planner + Graphs & Table
 # ------------------------------------------
 with tab_planner:
     st.subheader("📊 Weighted Subject Priority Matrix")
-    st.caption("Compute urgency weights and generate an AI timetable synced with your Calendar tab.")
+    st.caption("Configure your subjects below to visualize live urgency weights, daily time blocks, and AI roadmaps.")
 
     num_subjects = st.number_input("Number of Subjects", min_value=1, max_value=8, value=3)
 
@@ -203,28 +203,85 @@ with tab_planner:
                     "name": s_name.strip(),
                     "difficulty": s_diff,
                     "days": s_days,
-                    "score": s_diff / max(s_days, 1),
+                    "score": round(s_diff / max(s_days, 1), 3),
                 }
             )
 
-    if st.button("⚡ Generate Adaptive Study Plan", type="primary"):
+    # Live Priority Graphs & Visualizing Table (updates automatically as sliders change!)
+    if subjects_data:
+        total_score = sum(item["score"] for item in subjects_data) or 1
+        effective_study_hours = max(daily_hours - 1, 0.5) if daily_hours > 1 else daily_hours
+        revision_hours = 1.0 if daily_hours > 1 else 0.0
+
+        table_rows = []
+        for item in subjects_data:
+            pct = round((item["score"] / total_score) * 100, 1)
+            alloc_hrs = round((pct / 100) * effective_study_hours, 2)
+            urgency_tag = "🔴 High" if pct >= 45 else ("🟡 Medium" if pct >= 25 else "🟢 Steady")
+            table_rows.append(
+                {
+                    "Subject": item["name"],
+                    "Urgency": urgency_tag,
+                    "Difficulty (1-5)": item["difficulty"],
+                    "Days Left": item["days"],
+                    "Priority (%)": pct,
+                    "Daily Study (Hrs)": alloc_hrs,
+                }
+            )
+
+        df_priority = pd.DataFrame(table_rows).sort_values(by="Priority (%)", ascending=False)
+        st.session_state.last_weights = dict(zip(df_priority["Subject"], df_priority["Priority (%)"]))
+
+        st.divider()
+        st.markdown("### 📈 Live Priority Analytics & Allocation Table")
+
+        # KPI Metrics Row
+        metric_cols = st.columns(len(df_priority))
+        for idx, (_, row) in enumerate(df_priority.iterrows()):
+            metric_cols[idx].metric(
+                label=row["Subject"],
+                value=f"{row['Priority (%)']}%",
+                delta=f"{row['Daily Study (Hrs)']} hrs/day",
+            )
+
+        # Two Side-by-Side Priority Graphs
+        g_col1, g_col2 = st.columns(2)
+        with g_col1:
+            st.markdown("**🎯 Urgency Share by Subject (%)**")
+            chart_pct = df_priority.set_index("Subject")[["Priority (%)"]]
+            st.bar_chart(chart_pct, color="#3b82f6", height=280)
+
+        with g_col2:
+            st.markdown(f"**⏱️ Daily Time Split ({effective_study_hours}h Focus + {revision_hours}h Revision)**")
+            chart_hrs = df_priority.set_index("Subject")[["Daily Study (Hrs)"]]
+            st.bar_chart(chart_hrs, color="#10b981", height=280)
+
+        # Visualizing Breakdown Table
+        st.markdown("**📋 Priority Matrix Breakdown Table**")
+        st.dataframe(
+            df_priority,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Priority (%)": st.column_config.ProgressColumn(
+                    "Priority (%)",
+                    format="%.1f%%",
+                    min_value=0,
+                    max_value=100,
+                ),
+                "Daily Study (Hrs)": st.column_config.NumberColumn(
+                    "Daily Study (Hrs)",
+                    format="%.2f h",
+                ),
+            },
+        )
+
+    if st.button("⚡ Generate AI Study Roadmap", type="primary"):
         if not GROQ_API_KEY:
             st.error("Engine key missing in Streamlit Secrets. Add GROQ_API_KEY in App Settings → Secrets.")
         elif not subjects_data:
             st.warning("Please enter at least one subject.")
         else:
-            total_score = sum(item["score"] for item in subjects_data) or 1
-            weights = {
-                item["name"]: round((item["score"] / total_score) * 100, 1)
-                for item in subjects_data
-            }
-            st.session_state.last_weights = weights
-
-            st.markdown("### 🎯 Computed Priority Allocation")
-            metric_cols = st.columns(len(weights))
-            for idx, (subj, pct) in enumerate(weights.items()):
-                metric_cols[idx].metric(label=subj, value=f"{pct}%")
-
             with st.spinner("Building your personalized study roadmap..."):
                 try:
                     client = Groq(api_key=GROQ_API_KEY)
@@ -232,7 +289,7 @@ with tab_planner:
                     Act as an expert academic coach for LearnPulse OS 2.0 (developed by Viswesh and team, Dept of CSE).
                     Student: {student_name} ({student_branch})
                     Daily Study Capacity: {daily_hours} hours (reserve 1 hour daily for active recall & revision).
-                    Subject Urgency Weights: {weights}
+                    Subject Urgency Weights: {st.session_state.last_weights}
                     Upcoming Calendar Deadlines:
                     {get_calendar_context()}
 
@@ -243,17 +300,17 @@ with tab_planner:
                         model=MODEL_NAME,
                         messages=[{"role": "user", "content": prompt}],
                     )
-                    st.markdown("### 📅 Your Personalized Study Roadmap")
+                    st.markdown("### 📅 Your Personalized AI Study Roadmap")
                     st.markdown(resp.choices[0].message.content)
                 except Exception as e:
                     st.error(f"Unable to generate schedule right now: {e}")
 
 # ------------------------------------------
-# TAB 2: Smart Schedule Re-Balancer
+# TAB 2: Smart Schedule Re-Balancer + Workload Graph & Table
 # ------------------------------------------
 with tab_rebalancer:
     st.subheader("🔄 Dynamic Schedule Re-Balancer")
-    st.caption("Missed a study session or fell behind? Redistribute your backlog across remaining days automatically.")
+    st.caption("Visualize how missed hours are absorbed across upcoming days without overloading your daily schedule.")
 
     rb_col1, rb_col2 = st.columns(2)
     with rb_col1:
@@ -269,15 +326,44 @@ with tab_rebalancer:
     )
 
     extra_per_day = round(missed_hours / recovery_days, 2)
+    capped_extra = min(extra_per_day, max_extra_daily)
+    trimmed_hours = round(max(missed_hours - (capped_extra * recovery_days), 0), 2)
+
     if extra_per_day > max_extra_daily:
         st.warning(
             f"⚠️ Recovering {missed_hours}h in {recovery_days} days requires **+{extra_per_day}h/day**, "
-            f"which exceeds your **{max_extra_daily}h/day** buffer. The AI will trim low-priority tasks to prevent burnout."
+            f"which exceeds your **{max_extra_daily}h/day** buffer. **{trimmed_hours}h** of low-priority tasks will be trimmed."
         )
     else:
         st.info(f"✅ Smooth recovery: **+{extra_per_day} hours/day** over the next **{recovery_days} days**.")
 
-    if st.button("🔄 Re-Balance My Schedule", type="primary"):
+    # Visual Recovery Projection Graph & Table
+    today_ist = datetime.now(IST).date()
+    recovery_rows = []
+    for d in range(1, recovery_days + 1):
+        day_label = (today_ist + timedelta(days=d)).strftime("%b %d (%a)")
+        recovery_rows.append(
+            {
+                "Day": day_label,
+                "Baseline Hours": float(daily_hours),
+                "Recovery Catch-Up": capped_extra,
+                "Total Planned (Hrs)": round(daily_hours + capped_extra, 2),
+            }
+        )
+    df_recovery = pd.DataFrame(recovery_rows)
+
+    vis_r1, vis_r2 = st.columns([1.3, 1])
+    with vis_r1:
+        st.markdown("**📊 Re-Balanced Daily Workload (Baseline vs. Catch-Up)**")
+        st.bar_chart(
+            df_recovery.set_index("Day")[["Baseline Hours", "Recovery Catch-Up"]],
+            height=260,
+        )
+    with vis_r2:
+        st.markdown("**📋 Recovery Schedule Table**")
+        st.dataframe(df_recovery, use_container_width=True, hide_index=True)
+
+    if st.button("🔄 Generate AI Re-Balanced Plan", type="primary"):
         if not GROQ_API_KEY:
             st.error("Engine key missing in Streamlit Secrets. Add GROQ_API_KEY in App Settings → Secrets.")
         else:
@@ -310,11 +396,11 @@ with tab_rebalancer:
                     st.error(f"Re-balancer error: {e}")
 
 # ------------------------------------------
-# TAB 3: Exam & Deadline Calendar (.txt Save & Load)
+# TAB 3: Exam & Deadline Calendar (.txt Save & Load + Countdown Visuals)
 # ------------------------------------------
 with tab_calendar:
     st.subheader("📅 Exam & Assignment Countdown Calendar")
-    st.caption("Add your exams or deadlines below and save them directly as a .txt file to your device.")
+    st.caption("Add exams below, visualize days remaining, and save/restore your calendar as a .txt file.")
 
     with st.form("add_event_form", clear_on_submit=True):
         c1, c2, c3 = st.columns([2, 3, 1.5], vertical_alignment="bottom")
@@ -367,21 +453,27 @@ with tab_calendar:
         today = datetime.now(IST).date()
         sorted_events = sorted(st.session_state.calendar_events, key=lambda x: x["date"])
 
-        for idx, ev in enumerate(sorted_events):
+        cal_rows = []
+        for ev in sorted_events:
             d_obj = datetime.strptime(ev["date"], "%Y-%m-%d").date()
             days_left = (d_obj - today).days
-            if days_left == 0:
-                badge = "🔥 TODAY"
-            elif days_left == 1:
-                badge = "⏰ TOMORROW"
-            elif days_left > 1:
-                badge = f"⏳ {days_left} days left"
-            else:
-                badge = f"✅ {abs(days_left)} days ago"
+            status = (
+                "🔥 TODAY"
+                if days_left == 0
+                else ("⏰ TOMORROW" if days_left == 1 else (f"⏳ {days_left} days left" if days_left > 1 else "✅ Past"))
+            )
+            cal_rows.append(
+                {
+                    "Date": ev["date"],
+                    "Event": ev["title"],
+                    "Status": status,
+                    "Days Remaining": max(days_left, 0),
+                }
+            )
 
-            row_c1, row_c2, row_c3 = st.columns([2, 4, 1], vertical_alignment="center")
-            row_c1.markdown(f"**`{ev['date']}`** — {badge}")
-            row_c2.write(ev["title"])
-            if row_c3.button("🗑️ Remove", key=f"del_ev_{idx}"):
-                st.session_state.calendar_events.remove(ev)
-                st.rerun()
+        df_cal = pd.DataFrame(cal_rows)
+
+        cal_v1, cal_v2 = st.columns([1.2, 1])
+        with cal_v1:
+            st.markdown("**📋 Upcoming Exam & Deadline Table**")
+            st.dataframe(df_cal[["Date", "Event", "Status"]], use_container
