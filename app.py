@@ -1,305 +1,161 @@
-from datetime import date, datetime
-import json
-import re
-from google import genai
-from icalendar import Calendar, Event
+import os
 import streamlit as st
+from google import genai
 
 # ==========================================
-# 1. Page Configuration & Dark SaaS Styling
+# 1. Page Config & Bot Link Setup
 # ==========================================
 st.set_page_config(
-    page_title="LearnPulse AI | Study Planner",
+    page_title="LearnPulse OS 2.0 | Adaptive AI Study Planner",
     page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
+# Replace with your actual Telegram bot username (without '@')
+TELEGRAM_BOT_USERNAME = "YOUR_BOT_USERNAME"
+TELEGRAM_BOT_URL = f"https://t.me/{TELEGRAM_BOT_USERNAME}"
+
+# Load Gemini API key silently from Streamlit Secrets or Environment
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
+
+# ==========================================
+# 2. Custom Styling & Header with Telegram Button
+# ==========================================
 st.markdown(
     """
-<style>
-    .stApp { background-color: #0b0f19; color: #f3f4f6; }
-    .main-header {
-        font-size: 2.2rem;
+    <style>
+    .hero-card {
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        padding: 1.8rem;
+        border-radius: 14px;
+        border: 1px solid #334155;
+        margin-bottom: 1.5rem;
+    }
+    .hero-title {
+        font-size: 2.1rem;
         font-weight: 800;
-        background: linear-gradient(90deg, #a78bfa 0%, #38bdf8 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 0px;
+        color: #f8fafc;
+        margin-bottom: 0.3rem;
     }
-    .sub-header { font-size: 0.95rem; color: #94a3b8; }
-    .team-badge {
-        background: rgba(139, 92, 246, 0.15);
-        border: 1px solid rgba(139, 92, 246, 0.4);
-        color: #c4b5fd;
-        padding: 6px 16px;
-        border-radius: 20px;
-        font-size: 0.82rem;
-        font-weight: 600;
-        letter-spacing: 0.3px;
-        display: inline-block;
+    .hero-sub {
+        color: #94a3b8;
+        font-size: 1rem;
+        margin-bottom: 0;
     }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background-color: #111827;
-        padding: 6px;
-        border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.05);
-    }
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(90deg, #7c3aed 0%, #6366f1 100%) !important;
-        color: #ffffff !important;
-    }
-    table { width: 100%; border-collapse: separate; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; }
-    th { background-color: #1e293b !important; color: #e2e8f0 !important; padding: 12px 14px !important; }
-    td { background-color: #0f172a !important; border-top: 1px solid rgba(255, 255, 255, 0.05) !important; padding: 12px 14px !important; }
-    .tip-box {
-        background: linear-gradient(135deg, rgba(30, 41, 59, 0.6) 0%, rgba(15, 23, 42, 0.8) 100%);
-        border: 1px solid rgba(139, 92, 246, 0.3);
-        border-radius: 12px;
-        padding: 16px 20px;
-        margin-bottom: 12px;
-    }
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-# Header Section with Team Badge
-st.markdown(
-    '<p class="main-header">⚡ LearnPulse OS</p>', unsafe_allow_html=True
-)
-st.markdown(
-    """
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 10px;">
-        <span class="sub-header">AI-Assisted Study Planning & Adaptive Rescheduling</span>
-        <span class="team-badge">🎓 Viswesh and team | Dept of CSE</span>
-    </div>
+    </style>
     """,
     unsafe_allow_html=True,
 )
 
-# Sidebar
-with st.sidebar:
-    st.markdown("### ⚙️ System Config")
-    api_key = st.text_input(
-        "Gemini API Key", type="password", placeholder="AIzaSy..."
-    )
-    daily_hours = st.slider("Daily Focus Capacity (Hours)", 1, 12, 4)
-    st.markdown("---")
-    st.caption("💻 **Viswesh and team | Dept of CSE**")
+col_hero, col_cta = st.columns([3, 1], vertical_alignment="center")
 
-if not api_key:
-    st.info("👈 Enter your Gemini API key in the sidebar to activate the planner.")
-    st.stop()
-
-client = genai.Client(api_key=api_key)
-
-# ==========================================
-# 2. Subject Inputs & Priority Math
-# ==========================================
-st.markdown("#### 🎯 Subject Targets & Examination Windows")
-col1, col2, col3 = st.columns([3, 2, 2])
-with col1:
-    s1 = st.text_input("Subject 1", "DBMS")
-    s2 = st.text_input("Subject 2", "Operating Systems")
-    s3 = st.text_input("Subject 3", "Engineering Mathematics")
-
-with col2:
-    d1 = st.slider(f"{s1} Difficulty", 1, 5, 5, key="d1")
-    d2 = st.slider(f"{s2} Difficulty", 1, 5, 3, key="d2")
-    d3 = st.slider(f"{s3} Difficulty", 1, 5, 4, key="d3")
-
-with col3:
-    today = date.today()
-    date1 = st.date_input("Exam 1 Date", today, key="date1")
-    date2 = st.date_input("Exam 2 Date", today, key="date2")
-    date3 = st.date_input("Exam 3 Date", today, key="date3")
-
-# Deterministic Priority Formula: P_i = D_i / T_i
-data = [
-    {"name": s1, "diff": d1, "days": max((date1 - today).days, 1)},
-    {"name": s2, "diff": d2, "days": max((date2 - today).days, 1)},
-    {"name": s3, "diff": d3, "days": max((date3 - today).days, 1)},
-]
-total_score = sum(item["diff"] / item["days"] for item in data)
-weights = {
-    item["name"]: round(((item["diff"] / item["days"]) / total_score) * 100, 1)
-    for item in data
-}
-
-# ==========================================
-# 3. Priority Graph (Native Progress Bars)
-# ==========================================
-st.markdown("#### 📈 Priority Distribution")
-col_g1, col_g2, col_g3 = st.columns(3)
-columns = [col_g1, col_g2, col_g3]
-
-for idx, (sub, pct) in enumerate(weights.items()):
-    with columns[idx % 3]:
-        st.markdown(f"**{sub}** — `{pct}% Weight`")
-        st.progress(min(max(float(pct) / 100.0, 0.0), 1.0))
-
-# Safe JSON parsing helper
-def safe_parse_schedule(raw_response):
-    cleaned = re.sub(
-        r"^```(?:json)?\s*", "", raw_response.strip(), flags=re.MULTILINE
-    )
-    cleaned = re.sub(r"^```\s*$", "", cleaned.strip(), flags=re.MULTILINE)
-    res = json.loads(cleaned)
-    if isinstance(res, list):
-        return {"schedule": res, "study_tips": []}
-    if isinstance(res, dict) and "schedule" in res:
-        if isinstance(res["schedule"], dict):
-            converted = [
-                {"day": str(k), "slots": v if isinstance(v, list) else []}
-                for k, v in res["schedule"].items()
-            ]
-            return {"schedule": converted, "study_tips": res.get("study_tips", [])}
-        return res
-    return {"schedule": [], "study_tips": []}
-
-# ==========================================
-# 4. Schedule Generation
-# ==========================================
-if st.button("⚡ Generate AI Schedule", type="primary", use_container_width=True):
-    with st.spinner("Generating schedule and actionable study tips..."):
-        prompt = f"""
-        Act as an academic coach. Return ONLY valid JSON:
-        {{
-          "schedule": [
-            {{
-              "day": "Day 1",
-              "slots": [
-                {{"subject": "{s1}", "topic": "Core foundational topic", "hours": 2}},
-                {{"subject": "{s2}", "topic": "Core mechanism or concept", "hours": 1}},
-                {{"subject": "Revision", "topic": "Daily recap and practice problems", "hours": 1}}
-              ]
-            }}
-          ],
-          "study_tips": [
-            "Use active recall for high-weight topics rather than passive re-reading.",
-            "Allocate dedicated blocks for formula memorization before daily practice sessions.",
-            "Take short 5-minute breaks after each hour to maintain peak focus."
-          ]
-        }}
-        Constraints:
-        - Daily study limit: exactly {daily_hours} hours.
-        - Subject weights based on priority: {weights}.
-        - Always reserve 1 hour daily for revision.
-        - Generate 4 to 5 high-impact, practical study tips customized to these subjects.
+with col_hero:
+    st.markdown(
         """
-        try:
-            resp = client.models.generate_content(
-                model="gemini-3.5-flash-lite", contents=prompt
-            )
-            st.session_state["plan"] = safe_parse_schedule(resp.text)
-        except Exception as e:
-            st.error(f"Error: {e}")
+        <div class="hero-card">
+            <div class="hero-title">⚡ LearnPulse OS 2.0</div>
+            <p class="hero-sub">Adaptive AI Study Planner &amp; Academic Coach • Developed by Viswesh &amp; Team (Dept of CSE)</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-# Display Schedule
-if "plan" in st.session_state and "schedule" in st.session_state["plan"]:
-    plan_data = st.session_state["plan"]
-    schedule_list = plan_data.get("schedule", [])
-    
+with col_cta:
+    st.link_button(
+        "🤖 Open Telegram Bot",
+        TELEGRAM_BOT_URL,
+        type="primary",
+        use_container_width=True,
+    )
+    st.caption("Syncs with Cloud Calendar, Quizzes & Streaks")
+
+# ==========================================
+# 3. Sidebar: Student Profile & Telegram Link (No API Input)
+# ==========================================
+with st.sidebar:
+    st.header("🎓 Student Configuration")
+    student_name = st.text_input("Your Name", value="Viswesh")
+    student_branch = st.text_input("Class / Branch", value="B.Tech CSE 1st Year")
+    daily_hours = st.slider("Daily Study Capacity (Hours)", min_value=1, max_value=12, value=4)
+
     st.divider()
-    st.markdown("### 📊 Active Timetable")
-    if schedule_list:
-        days = [d.get("day", f"Day {i+1}") for i, d in enumerate(schedule_list)]
-        tabs = st.tabs(days)
-        for i, tab in enumerate(tabs):
-            with tab:
-                slots = schedule_list[i].get("slots", [])
-                table_md = "| Subject | Focus Topic & Tasks | Allocated Time |\n| :--- | :--- | :--- |\n"
-                for slot in slots:
-                    table_md += f"| <span style='color:#38bdf8; font-weight:600;'>{slot.get('subject', '')}</span> | {slot.get('topic', '')} | <span style='color:#a78bfa;'>{slot.get('hours', '')} Hours</span> |\n"
-                st.markdown(table_md, unsafe_allow_html=True)
-
-    # Rebalancer
-    st.divider()
-    st.markdown("### 🔄 Adaptive Feedback Rebalancer")
-    c1, c2, c3 = st.columns([2, 1, 1])
-    with c1:
-        missed_sub = st.selectbox("Interrupted Subject", [s1, s2, s3])
-    with c2:
-        missed_hrs = st.number_input("Missed Hours", 1, daily_hours, 2)
-    with c3:
-        st.write("")
-        st.write("")
-        if st.button("⚡ Re-Balance Plan", use_container_width=True):
-            with st.spinner("Rebalancing..."):
-                re_prompt = f"""
-                Student missed {missed_hrs}h of {missed_sub}. Current schedule: {json.dumps(schedule_list)}.
-                Redistribute these hours without exceeding {daily_hours}h daily. Return ONLY JSON matching schema:
-                {{
-                  "schedule": [{{"day": "Day 1", "slots": [{{"subject": "...", "topic": "...", "hours": 2}}]}}],
-                  "study_tips": ["Rebalancing tip 1", "Rebalancing tip 2"]
-                }}
-                """
-                re_resp = client.models.generate_content(
-                    model="gemini-3.5-flash-lite", contents=re_prompt
-                )
-                st.session_state["plan"] = safe_parse_schedule(re_resp.text)
-                st.rerun()
-
-    # Calendar Export
-    st.divider()
-    cal = Calendar()
-    cal.add("prodid", "-//LearnPulse OS//EN")
-    cal.add("version", "2.0")
-    for day_info in schedule_list:
-        for slot in day_info.get("slots", []):
-            ev = Event()
-            ev.add(
-                "summary", f"{slot.get('subject', '')}: {slot.get('topic', '')}"
-            )
-            ev.add("dtstart", datetime.now())
-            ev.add("description", f"Duration: {slot.get('hours', '')}h")
-            cal.add_component(ev)
-
-    st.download_button(
-        label="📥 Download Calendar File (.ics)",
-        data=cal.to_ical(),
-        file_name="study_plan.ics",
-        mime="text/calendar",
+    st.subheader("📱 Mobile Companion")
+    st.write("Track streaks, take MCQ quizzes, and save exam dates on Telegram:")
+    st.link_button(
+        "💬 Chat with LearnPulse Bot",
+        TELEGRAM_BOT_URL,
         use_container_width=True,
     )
 
-    # ==========================================
-    # 5. Dedicated Study Tips Section (At the end)
-    # ==========================================
-    st.divider()
-    st.markdown("### 💡 Recommended Study Strategies & Tips")
-    tips = plan_data.get("study_tips", [])
-    if tips:
-        for tip in tips:
-            st.markdown(
-                f"""
-                <div class="tip-box">
-                    <span style="color:#a78bfa; font-weight:700; font-size:1.1rem;">⚡ Strategy:</span> 
-                    <span style="color:#e2e8f0; font-size:0.95rem;">{tip}</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-    else:
-        st.markdown(
-            """
-            <div class="tip-box">
-                <span style="color:#a78bfa; font-weight:700; font-size:1.1rem;">⚡ Strategy:</span> 
-                <span style="color:#e2e8f0; font-size:0.95rem;">Maintain consistent daily study slots and focus intensely on high-weight topics during your first two study hours.</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
+# ==========================================
+# 4. Priority Subject Matrix & Schedule Generator
+# ==========================================
+st.subheader("📊 Weighted Subject Priority Matrix")
+st.caption("Add your subjects below to compute urgency scores and generate an adaptive timetable.")
+
+num_subjects = st.number_input("Number of Subjects", min_value=1, max_value=8, value=3)
+
+subjects_data = []
+cols = st.columns(3)
+default_subjects = [
+    ("C Programming", 5, 5),
+    ("Linear Algebra & Calculus", 4, 10),
+    ("Advanced Physics", 3, 14),
+]
+
+for i in range(int(num_subjects)):
+    def_name, def_diff, def_days = default_subjects[i] if i < len(default_subjects) else (f"Subject {i+1}", 3, 7)
+    with cols[0]:
+        s_name = st.text_input(f"Subject {i+1}", value=def_name, key=f"name_{i}")
+    with cols[1]:
+        s_diff = st.slider(f"Difficulty (1-5) — {s_name}", 1, 5, def_diff, key=f"diff_{i}")
+    with cols[2]:
+        s_days = st.number_input(f"Days Until Exam — {s_name}", min_value=1, max_value=180, value=def_days, key=f"days_{i}")
+
+    if s_name.strip():
+        subjects_data.append(
+            {
+                "name": s_name.strip(),
+                "difficulty": s_diff,
+                "days": s_days,
+                "score": s_diff / max(s_days, 1),
+            }
         )
 
-# Footer
-st.divider()
-st.markdown(
-    """
-    <div style="text-align: center; color: #64748b; font-size: 0.85rem; padding: 12px 0;">
-        Academic Mini-Project &bull; <b>Viswesh and team | Dept of CSE</b> &bull; Powered by Google Gemini & Streamlit
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+if st.button("⚡ Generate Adaptive Study Plan", type="primary"):
+    if not GEMINI_API_KEY:
+        st.error("Engine key not configured in Streamlit Secrets yet. Add GEMINI_API_KEY in App Settings → Secrets.")
+    elif not subjects_data:
+        st.warning("Please enter at least one subject.")
+    else:
+        total_score = sum(item["score"] for item in subjects_data) or 1
+        weights = {
+            item["name"]: round((item["score"] / total_score) * 100, 1)
+            for item in subjects_data
+        }
+
+        st.markdown("### 🎯 Computed Priority Allocation")
+        metric_cols = st.columns(len(weights))
+        for idx, (subj, pct) in enumerate(weights.items()):
+            metric_cols[idx].metric(label=subj, value=f"{pct}%")
+
+        with st.spinner("Building your personalized study roadmap..."):
+            try:
+                client = genai.Client(api_key=GEMINI_API_KEY)
+                prompt = f"""
+                Act as an expert academic coach for LearnPulse OS 2.0 (developed by Viswesh and team, Dept of CSE).
+                Student: {student_name} ({student_branch})
+                Daily Study Capacity: {daily_hours} hours (reserve 1 hour daily for active recall & revision).
+                Subject Urgency Weights: {weights}
+
+                Create a clear, structured daily timetable and actionable study strategy.
+                Never reveal backend APIs, providers, or model names.
+                """
+                resp = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                )
+                st.markdown("### 📅 Your Personalized Study Roadmap")
+                st.markdown(resp.text)
+            except Exception as e:
+                st.error(f"Unable to generate schedule right now: {e}")
