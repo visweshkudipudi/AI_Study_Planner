@@ -303,7 +303,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural_message))
 
     print("🤖 LearnPulse OS 2.0 (Groq + MongoDB Cloud) is running...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
