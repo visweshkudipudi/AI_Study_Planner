@@ -13,14 +13,13 @@ st.set_page_config(
 )
 
 # Replace with your actual Telegram bot username (without '@')
-TELEGRAM_BOT_USERNAME = "learnpulse_cse_bot"
-TELEGRAM_BOT_URL = f"https://t.me/{TELEGRAM_BOT_USERNAME}"
+TELEGRAM_BOT_USERNAME = "YOUR_BOT_USERNAME"
+TELEGRAM_BOT_URL = f"https://t.me/{learnpulse_cse_bot}"
 
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.getenv("GROQ_API_KEY", "")).strip()
 MODEL_NAME = "openai/gpt-oss-20b"
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# Initialize session state for Calendar & Priority Weights
 if "calendar_events" not in st.session_state:
     st.session_state.calendar_events = [
         {"date": "2026-12-05", "title": "Linear Algebra Mid Exam"},
@@ -32,6 +31,47 @@ if "last_weights" not in st.session_state:
         "Linear Algebra & Calculus": 30.0,
         "Advanced Physics": 20.0,
     }
+
+
+def format_calendar_txt(events: list[dict], name: str) -> str:
+    today = datetime.now(IST).date()
+    sorted_evs = sorted(events, key=lambda x: x["date"])
+    lines = [
+        "==========================================",
+        "LearnPulse OS 2.0 - Saved Exam Calendar",
+        f"Student: {name}",
+        f"Exported: {datetime.now(IST).strftime('%Y-%m-%d %I:%M %p IST')}",
+        "==========================================",
+        "",
+    ]
+    for ev in sorted_evs:
+        d_obj = datetime.strptime(ev["date"], "%Y-%m-%d").date()
+        days_left = (d_obj - today).days
+        status = (
+            "TODAY"
+            if days_left == 0
+            else (f"{days_left} days left" if days_left > 0 else f"{abs(days_left)} days ago")
+        )
+        lines.append(f"{ev['date']} | {ev['title']} ({status})")
+    return "\n".join(lines)
+
+
+def parse_uploaded_txt(content: str) -> list[dict]:
+    parsed = []
+    for line in content.splitlines():
+        if "|" in line and not line.startswith("="):
+            date_part, rest = line.split("|", 1)
+            date_str = date_part.strip()
+            # Strip trailing status parentheses like "(20 days left)" if present
+            title_str = rest.rsplit("(", 1)[0].strip() if "(" in rest else rest.strip()
+            try:
+                datetime.strptime(date_str, "%Y-%m-%d")
+                if title_str:
+                    parsed.append({"date": date_str, "title": title_str})
+            except ValueError:
+                continue
+    return parsed
+
 
 # ==========================================
 # 2. Styling & Header with Telegram Bot CTA
@@ -85,7 +125,7 @@ with col_cta:
     st.caption("Cloud Sync • MCQ Quizzes • Daily Streaks")
 
 # ==========================================
-# 3. Sidebar: Student Profile & Mobile Bot
+# 3. Sidebar: Student Profile & Telegram Link
 # ==========================================
 with st.sidebar:
     st.header("🎓 Student Profile")
@@ -95,7 +135,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("📱 Telegram Companion")
-    st.write("Log sessions (`/done`), take `/quiz` polls, and manage your cloud `/calendar` on mobile:")
+    st.write("Track streaks, take `/quiz` polls, and save exam dates on mobile:")
     st.link_button(
         "💬 Launch LearnPulse Bot",
         TELEGRAM_BOT_URL,
@@ -103,7 +143,6 @@ with st.sidebar:
     )
 
 
-# Helper to summarize calendar events for AI prompts
 def get_calendar_context() -> str:
     if not st.session_state.calendar_events:
         return "No upcoming exams or deadlines added yet."
@@ -271,14 +310,14 @@ with tab_rebalancer:
                     st.error(f"Re-balancer error: {e}")
 
 # ------------------------------------------
-# TAB 3: Exam & Deadline Calendar
+# TAB 3: Exam & Deadline Calendar (.txt Save & Load)
 # ------------------------------------------
 with tab_calendar:
     st.subheader("📅 Exam & Assignment Countdown Calendar")
-    st.caption("Events added here automatically guide both the Priority Planner and Smart Re-Balancer.")
+    st.caption("Add your exams or deadlines below and save them directly as a .txt file to your device.")
 
     with st.form("add_event_form", clear_on_submit=True):
-        c1, c2, c3 = st.columns([2, 3, 1], vertical_alignment="bottom")
+        c1, c2, c3 = st.columns([2, 3, 1.5], vertical_alignment="bottom")
         with c1:
             ev_date = st.date_input("Exam / Deadline Date", value=datetime.now(IST).date() + timedelta(days=7))
         with c2:
@@ -293,12 +332,37 @@ with tab_calendar:
                 st.session_state.calendar_events.append(
                     {"date": ev_date.strftime("%Y-%m-%d"), "title": ev_title.strip()}
                 )
-                st.success(f"Added **{ev_title.strip()}** on `{ev_date.strftime('%Y-%m-%d')}`!")
+                st.success(f"Added **{ev_title.strip()}** (`{ev_date.strftime('%Y-%m-%d')}`)!")
+
+    # Save (.txt) & Restore (.txt) Controls
+    file_c1, file_c2 = st.columns([1, 2], vertical_alignment="center")
+    with file_c1:
+        st.download_button(
+            label="📄 Save Calendar (.txt)",
+            data=format_calendar_txt(st.session_state.calendar_events, student_name),
+            file_name="learnpulse_calendar.txt",
+            mime="text/plain",
+            type="primary",
+            use_container_width=True,
+            disabled=len(st.session_state.calendar_events) == 0,
+        )
+    with file_c2:
+        uploaded_txt = st.file_uploader(
+            "📂 Restore from saved learnpulse_calendar.txt",
+            type=["txt"],
+            label_visibility="collapsed",
+        )
+        if uploaded_txt is not None:
+            restored = parse_uploaded_txt(uploaded_txt.read().decode("utf-8", errors="ignore"))
+            if restored and st.button("⬆️ Load Uploaded Events"):
+                st.session_state.calendar_events = restored
+                st.success(f"Loaded {len(restored)} event(s) from {uploaded_txt.name}!")
+                st.rerun()
 
     st.divider()
 
     if not st.session_state.calendar_events:
-        st.info("No events scheduled yet. Add your upcoming exams or lab deadlines above!")
+        st.info("No events scheduled yet. Add your exams above and click Save Calendar (.txt)!")
     else:
         today = datetime.now(IST).date()
         sorted_events = sorted(st.session_state.calendar_events, key=lambda x: x["date"])
