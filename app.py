@@ -1,6 +1,6 @@
 import os
 import streamlit as st
-from groq import Groq
+from google import genai
 
 # ==========================================
 # 1. Page Config & Bot Link Setup
@@ -15,12 +15,11 @@ st.set_page_config(
 TELEGRAM_BOT_USERNAME = "YOUR_BOT_USERNAME"
 TELEGRAM_BOT_URL = f"https://t.me/{TELEGRAM_BOT_USERNAME}"
 
-# Load API key silently from Streamlit Secrets or Environment (no user input needed)
-GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.getenv("GROQ_API_KEY", "")).strip()
-MODEL_NAME = "openai/gpt-oss-20b"
+# Load Gemini API key silently from Streamlit Secrets or Environment
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", "")).strip()
 
 # ==========================================
-# 2. Custom Styling
+# 2. Custom Styling & Header with Telegram Button
 # ==========================================
 st.markdown(
     """
@@ -48,9 +47,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ==========================================
-# 3. Header & Direct Telegram Bot Launch
-# ==========================================
 col_hero, col_cta = st.columns([3, 1], vertical_alignment="center")
 
 with col_hero:
@@ -74,7 +70,7 @@ with col_cta:
     st.caption("Syncs with Cloud Calendar, Quizzes & Streaks")
 
 # ==========================================
-# 4. Sidebar: Student Profile & Telegram Companion
+# 3. Sidebar: Student Profile & Telegram Link (No API Input)
 # ==========================================
 with st.sidebar:
     st.header("🎓 Student Configuration")
@@ -84,7 +80,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("📱 Mobile Companion")
-    st.write("Track streaks, take MCQ quizzes, and save exam dates on the go:")
+    st.write("Track streaks, take MCQ quizzes, and save exam dates on Telegram:")
     st.link_button(
         "💬 Chat with LearnPulse Bot",
         TELEGRAM_BOT_URL,
@@ -92,7 +88,7 @@ with st.sidebar:
     )
 
 # ==========================================
-# 5. Priority Subject Matrix & Schedule Generator
+# 4. Priority Subject Matrix & Schedule Generator
 # ==========================================
 st.subheader("📊 Weighted Subject Priority Matrix")
 st.caption("Add your subjects below to compute urgency scores and generate an adaptive timetable.")
@@ -127,8 +123,8 @@ for i in range(int(num_subjects)):
         )
 
 if st.button("⚡ Generate Adaptive Study Plan", type="primary"):
-    if not GROQ_API_KEY:
-        st.error("Engine key not configured in Streamlit Secrets yet. Add GROQ_API_KEY in App Settings → Secrets.")
+    if not GEMINI_API_KEY:
+        st.error("Engine key not configured in Streamlit Secrets yet. Add GEMINI_API_KEY in App Settings → Secrets.")
     elif not subjects_data:
         st.warning("Please enter at least one subject.")
     else:
@@ -145,7 +141,7 @@ if st.button("⚡ Generate Adaptive Study Plan", type="primary"):
 
         with st.spinner("Building your personalized study roadmap..."):
             try:
-                client = Groq(api_key=GROQ_API_KEY)
+                client = genai.Client(api_key=GEMINI_API_KEY)
                 prompt = f"""
                 Act as an expert academic coach for LearnPulse OS 2.0 (developed by Viswesh and team, Dept of CSE).
                 Student: {student_name} ({student_branch})
@@ -155,11 +151,11 @@ if st.button("⚡ Generate Adaptive Study Plan", type="primary"):
                 Create a clear, structured daily timetable and actionable study strategy.
                 Never reveal backend APIs, providers, or model names.
                 """
-                resp = client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=[{"role": "user", "content": prompt}],
+                resp = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
                 )
                 st.markdown("### 📅 Your Personalized Study Roadmap")
-                st.markdown(resp.choices[0].message.content)
+                st.markdown(resp.text)
             except Exception as e:
                 st.error(f"Unable to generate schedule right now: {e}")
