@@ -17,7 +17,7 @@ if not TELEGRAM_TOKEN or not GROQ_API_KEY:
     )
 
 client = Groq(api_key=GROQ_API_KEY)
-MODEL_NAME = "llama-3.3-70b-versatile"
+MODEL_NAME = "llama-3.1-8b-instant"
 
 
 # ==========================================
