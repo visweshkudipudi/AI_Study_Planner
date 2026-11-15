@@ -168,7 +168,7 @@ tab_planner, tab_rebalancer, tab_calendar = st.tabs(
 )
 
 # ------------------------------------------
-# TAB 1: Weighted Subject Priority Planner + Graphs & Table
+# TAB 1: Weighted Subject Priority Planner
 # ------------------------------------------
 with tab_planner:
     st.subheader("📊 Weighted Subject Priority Matrix")
@@ -207,7 +207,6 @@ with tab_planner:
                 }
             )
 
-    # Live Priority Graphs & Visualizing Table (updates automatically as sliders change!)
     if subjects_data:
         total_score = sum(item["score"] for item in subjects_data) or 1
         effective_study_hours = max(daily_hours - 1, 0.5) if daily_hours > 1 else daily_hours
@@ -235,7 +234,6 @@ with tab_planner:
         st.divider()
         st.markdown("### 📈 Live Priority Analytics & Allocation Table")
 
-        # KPI Metrics Row
         metric_cols = st.columns(len(df_priority))
         for idx, (_, row) in enumerate(df_priority.iterrows()):
             metric_cols[idx].metric(
@@ -244,19 +242,15 @@ with tab_planner:
                 delta=f"{row['Daily Study (Hrs)']} hrs/day",
             )
 
-        # Two Side-by-Side Priority Graphs
         g_col1, g_col2 = st.columns(2)
         with g_col1:
             st.markdown("**🎯 Urgency Share by Subject (%)**")
-            chart_pct = df_priority.set_index("Subject")[["Priority (%)"]]
-            st.bar_chart(chart_pct, color="#3b82f6", height=280)
+            st.bar_chart(df_priority.set_index("Subject")[["Priority (%)"]], color="#3b82f6", height=280)
 
         with g_col2:
             st.markdown(f"**⏱️ Daily Time Split ({effective_study_hours}h Focus + {revision_hours}h Revision)**")
-            chart_hrs = df_priority.set_index("Subject")[["Daily Study (Hrs)"]]
-            st.bar_chart(chart_hrs, color="#10b981", height=280)
+            st.bar_chart(df_priority.set_index("Subject")[["Daily Study (Hrs)"]], color="#10b981", height=280)
 
-        # Visualizing Breakdown Table
         st.markdown("**📋 Priority Matrix Breakdown Table**")
         st.dataframe(
             df_priority,
@@ -306,7 +300,7 @@ with tab_planner:
                     st.error(f"Unable to generate schedule right now: {e}")
 
 # ------------------------------------------
-# TAB 2: Smart Schedule Re-Balancer + Workload Graph & Table
+# TAB 2: Smart Schedule Re-Balancer
 # ------------------------------------------
 with tab_rebalancer:
     st.subheader("🔄 Dynamic Schedule Re-Balancer")
@@ -337,7 +331,6 @@ with tab_rebalancer:
     else:
         st.info(f"✅ Smooth recovery: **+{extra_per_day} hours/day** over the next **{recovery_days} days**.")
 
-    # Visual Recovery Projection Graph & Table
     today_ist = datetime.now(IST).date()
     recovery_rows = []
     for d in range(1, recovery_days + 1):
@@ -396,7 +389,7 @@ with tab_rebalancer:
                     st.error(f"Re-balancer error: {e}")
 
 # ------------------------------------------
-# TAB 3: Exam & Deadline Calendar (.txt Save & Load + Countdown Visuals)
+# TAB 3: Exam & Deadline Calendar (.txt Save & Load)
 # ------------------------------------------
 with tab_calendar:
     st.subheader("📅 Exam & Assignment Countdown Calendar")
@@ -420,7 +413,6 @@ with tab_calendar:
                 )
                 st.success(f"Added **{ev_title.strip()}** (`{ev_date.strftime('%Y-%m-%d')}`)!")
 
-    # Save (.txt) & Restore (.txt) Controls
     file_c1, file_c2 = st.columns([1, 2], vertical_alignment="center")
     with file_c1:
         st.download_button(
@@ -476,4 +468,16 @@ with tab_calendar:
         cal_v1, cal_v2 = st.columns([1.2, 1])
         with cal_v1:
             st.markdown("**📋 Upcoming Exam & Deadline Table**")
-            st.dataframe(df_cal[["Date", "Event", "Status"]], use_container
+            st.dataframe(df_cal[["Date", "Event", "Status"]], use_container_width=True, hide_index=True)
+        with cal_v2:
+            st.markdown("**⏳ Days Remaining Countdown Graph**")
+            st.bar_chart(df_cal.set_index("Event")[["Days Remaining"]], color="#f59e0b", height=230)
+
+        st.markdown("**Manage Saved Events:**")
+        for idx, ev in enumerate(sorted_events):
+            row_c1, row_c2, row_c3 = st.columns([2, 4, 1], vertical_alignment="center")
+            row_c1.markdown(f"**`{ev['date']}`**")
+            row_c2.write(ev["title"])
+            if row_c3.button("🗑️ Remove", key=f"del_ev_{idx}"):
+                st.session_state.calendar_events.remove(ev)
+                st.rerun()
