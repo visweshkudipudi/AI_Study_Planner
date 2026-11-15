@@ -152,7 +152,7 @@ if st.button("⚡ Generate Adaptive Study Plan", type="primary"):
                 Never reveal backend APIs, providers, or model names.
                 """
                 resp = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.8-flash",
                     contents=prompt,
                 )
                 st.markdown("### 📅 Your Personalized Study Roadmap")
