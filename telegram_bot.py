@@ -1,5 +1,6 @@
 import os
 import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from groq import Groq
 from pymongo import MongoClient
@@ -41,6 +42,7 @@ mongo_client = MongoClient(
 )
 db = mongo_client["learnpulse_os"]
 users_col = db["user_profiles"]
+events_col = db["calendar_events"]
 
 ASK_NAME, ASK_CLASS, ASK_STUDYING = range(3)
 
@@ -95,6 +97,34 @@ def save_user_profile(user_id: int, name: str, user_class: str, studying: str) -
         return False, str(e)
 
 
+def get_user_events(user_id: int) -> list[dict]:
+    try:
+        return list(events_col.find({"user_id": user_id}).sort("date", 1))
+    except Exception as e:
+        print(f"[EVENT READ ERROR] {e}")
+        return []
+
+
+def format_events_summary(events: list[dict]) -> str:
+    if not events:
+        return "No upcoming saved calendar events."
+    today = datetime.now(timezone.utc).date()
+    lines = []
+    for ev in events:
+        try:
+            ev_date = datetime.strptime(ev["date"], "%Y-%m-%d").date()
+            days_left = (ev_date - today).days
+            status = (
+                "TODAY"
+                if days_left == 0
+                else (f"in {days_left} days" if days_left > 0 else f"{abs(days_left)} days ago")
+            )
+            lines.append(f"- {ev['date']} ({status}): {ev['title']}")
+        except Exception:
+            lines.append(f"- {ev.get('date')}: {ev.get('title')}")
+    return "\n".join(lines)
+
+
 # ==========================================
 # 4. Onboarding Conversation (/start & /setup)
 # ==========================================
@@ -110,10 +140,12 @@ async def start_or_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🎓 <b>Class:</b> {existing['class']}\n"
                 f"📚 <b>Studying:</b> {existing['studying']}\n\n"
                 "<b>Commands:</b>\n"
+                "• <code>/addevent 2026-12-05 | C Programming Mid Exam</code> — Save exam/deadline\n"
+                "• <code>/calendar</code> — View saved calendar & countdown\n"
+                "• <code>/delevent 1</code> — Delete event #1\n"
                 "• <code>/plan DBMS:5:4, OS:3:7 | 4</code> — Weighted timetable\n"
                 "• <code>/profile</code> — View saved profile\n"
-                "• <code>/setup</code> — Update name, class & subjects\n"
-                "• <code>/dbcheck</code> — Test MongoDB cloud connection",
+                "• <code>/setup</code> — Update name, class & subjects",
                 parse_mode="HTML",
             )
             return ConversationHandler.END
@@ -164,8 +196,8 @@ async def receive_studying(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 <b>Name:</b> {name}\n"
             f"🎓 <b>Class:</b> {user_class}\n"
             f"📚 <b>Studying:</b> {studying}\n\n"
-            "Now ask me anything like:\n"
-            "<i>\"Create a 3-hour evening study plan for my subjects\"</i>",
+            "Try saving an exam date next:\n"
+            "<code>/addevent 2026-12-05 | C Programming Mid Exam</code>",
             parse_mode="HTML",
         )
     else:
@@ -182,13 +214,112 @@ async def cancel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 5. Diagnostic, Profile & Study Commands
+# 5. Cloud Calendar Commands (/addevent, /calendar, /delevent)
+# ==========================================
+async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = " ".join(context.args).strip()
+    if "|" not in raw:
+        await update.message.reply_text(
+            "⚠️ <b>Format:</b> <code>/addevent YYYY-MM-DD | Event Title</code>\n"
+            "<i>Example:</i> <code>/addevent 2026-12-05 | Linear Algebra Mid Exam</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    date_str, title = [part.strip() for part in raw.split("|", 1)]
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        await update.message.reply_text(
+            "⚠️ Invalid date format. Use <b>YYYY-MM-DD</b> (e.g., <code>2026-12-05</code>).",
+            parse_mode="HTML",
+        )
+        return
+
+    if not title:
+        await update.message.reply_text("⚠️ Please provide an event name after <code>|</code>.", parse_mode="HTML")
+        return
+
+    try:
+        events_col.insert_one(
+            {
+                "user_id": update.effective_user.id,
+                "date": date_str,
+                "title": title,
+            }
+        )
+        await update.message.reply_text(
+            "📅 <b>Saved to Cloud Calendar!</b>\n"
+            f"🗓️ <b>Date:</b> {date_str}\n"
+            f"📌 <b>Event:</b> {title}\n\n"
+            "Type <code>/calendar</code> anytime to view all your dates.",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ <b>Calendar Save Error:</b>\n<code>{e}</code>", parse_mode="HTML")
+
+
+async def view_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    events = get_user_events(update.effective_user.id)
+    if not events:
+        await update.message.reply_text(
+            "📅 <b>Your Cloud Calendar is empty!</b>\n\n"
+            "Add your first exam or deadline with:\n"
+            "<code>/addevent 2026-12-05 | C Programming Lab Exam</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    today = datetime.now(timezone.utc).date()
+    lines = ["📅 <b>Your Saved Cloud Calendar:</b>\n"]
+    for idx, ev in enumerate(events, start=1):
+        ev_date = datetime.strptime(ev["date"], "%Y-%m-%d").date()
+        days_left = (ev_date - today).days
+        if days_left == 0:
+            badge = "🔥 <b>TODAY</b>"
+        elif days_left > 0:
+            badge = f"⏳ <i>{days_left} days left</i>"
+        else:
+            badge = f"✅ <i>{abs(days_left)} days ago</i>"
+        lines.append(f"<b>{idx}.</b> <code>{ev['date']}</code> — {ev['title']} ({badge})")
+
+    lines.append("\n<i>Tip: Use</i> <code>/delevent 1</code> <i>to remove an event.</i>")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def delete_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "⚠️ Usage: <code>/delevent 1</code> (check numbers using <code>/calendar</code>)",
+            parse_mode="HTML",
+        )
+        return
+
+    index = int(context.args[0]) - 1
+    events = get_user_events(update.effective_user.id)
+    if index < 0 or index >= len(events):
+        await update.message.reply_text("⚠️ Invalid event number. Run <code>/calendar</code> to check.", parse_mode="HTML")
+        return
+
+    target = events[index]
+    try:
+        events_col.delete_one({"_id": target["_id"]})
+        await update.message.reply_text(
+            f"🗑️ Removed: <b>{target['title']}</b> (<code>{target['date']}</code>)",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error deleting event: <code>{e}</code>", parse_mode="HTML")
+
+
+# ==========================================
+# 6. Diagnostic, Profile & AI Study Commands
 # ==========================================
 async def db_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         mongo_client.admin.command("ping")
         await update.message.reply_text(
-            "✅ <b>MongoDB Cloud Connected!</b> Ping succeeded.",
+            "✅ <b>MongoDB Cloud Connected!</b> Profile & Calendar storage active.",
             parse_mode="HTML",
         )
     except Exception as e:
@@ -233,12 +364,16 @@ async def generate_plan_command(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    profile = get_user_profile(update.effective_user.id)
+    user_id = update.effective_user.id
+    profile = get_user_profile(user_id)
+    events = get_user_events(user_id)
+
     student_context = (
         f"Student Name: {profile['name']}, Class: {profile['class']}, Subjects: {profile['studying']}."
         if profile
         else "Student profile not set yet."
     )
+    calendar_context = format_events_summary(events)
 
     status_msg = await update.message.reply_text("⚡ Generating personalized schedule...")
 
@@ -250,6 +385,8 @@ async def generate_plan_command(update: Update, context: ContextTypes.DEFAULT_TY
         prompt = f"""
         Act as an academic coach for LearnPulse OS.
         {student_context}
+        Upcoming Saved Calendar Events:
+        {calendar_context}
         Subject priority weights: {weights}
         Daily study capacity: {daily_hours} hours (reserve 1 hour daily for revision).
 
@@ -270,24 +407,29 @@ async def generate_plan_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def handle_natural_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     user_text = update.message.text
-    profile = get_user_profile(update.effective_user.id)
+    profile = get_user_profile(user_id)
+    events = get_user_events(user_id)
 
     student_context = (
         f"Name: {profile['name']}, Class: {profile['class']}, Studying: {profile['studying']}"
         if profile
         else "Profile not set yet (remind user they can run /setup)."
     )
+    calendar_context = format_events_summary(events)
 
     status_msg = await update.message.reply_text("⚡ Thinking...")
 
     prompt = f"""
     You are LearnPulse OS 2.0 (by Viswesh and team | Dept of CSE), an AI Study Planner & Tutor.
     Student Profile: {student_context}
+    Upcoming Saved Calendar Events:
+    {calendar_context}
     User message: "{user_text}"
 
     Formatting rules (STRICT):
-    - Personalize using the student's name, class, and subjects naturally.
+    - Personalize using the student's name, class, subjects, and upcoming calendar dates naturally.
     - Use ONLY Telegram HTML tags: <b>bold</b> and <i>italic</i>.
     - NEVER use &nbsp;, Markdown (** or ###), or LaTeX ($...$). Use plain spaces and normal text.
     - Keep under 3500 characters.
@@ -304,7 +446,7 @@ async def handle_natural_message(update: Update, context: ContextTypes.DEFAULT_T
 
 
 # ==========================================
-# 6. Main Entry Point
+# 7. Main Entry Point
 # ==========================================
 def main():
     threading.Thread(target=start_health_server, daemon=True).start()
@@ -325,12 +467,15 @@ def main():
     )
 
     app.add_handler(onboarding_conv)
+    app.add_handler(CommandHandler("addevent", add_event))
+    app.add_handler(CommandHandler("calendar", view_calendar))
+    app.add_handler(CommandHandler("delevent", delete_event))
     app.add_handler(CommandHandler("dbcheck", db_check))
     app.add_handler(CommandHandler("profile", view_profile))
     app.add_handler(CommandHandler("plan", generate_plan_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural_message))
 
-    print("🤖 LearnPulse OS 2.0 is running...")
+    print("🤖 LearnPulse OS 2.0 with Cloud Calendar is running...")
     app.run_polling(drop_pending_updates=True)
 
 
