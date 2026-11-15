@@ -234,7 +234,7 @@ def calculate_streak(date_strings: list[str]) -> int:
 HELP_TEXT = (
     "⚡ <b>LearnPulse OS 2.0 — Command Guide</b>\n"
     "🎓 <i>Developed by Viswesh and team | Dept of CSE</i>\n\n"
-    "👤 <b>Profile & Setup</b>\n"
+    "👤 <b>Profile &amp; Setup</b>\n"
     "• <code>/setup</code> — Set or update your name, class &amp; subjects\n"
     "• <code>/profile</code> — View your saved profile\n\n"
     "📅 <b>Cloud Calendar</b>\n"
@@ -447,4 +447,233 @@ async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "title": title,
             }
         )
-        await update
+        await update.message.reply_text(
+            "📅 <b>Saved to Cloud Calendar!</b>\n"
+            f"🗓️ <b>Date:</b> {parsed_date} <i>(from \"{raw_date}\")</i>\n"
+            f"📌 <b>Event:</b> {title}\n\n"
+            "Type <code>/calendar</code> anytime to view all your dates.",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ <b>Calendar Save Error:</b>\n<code>{e}</code>", parse_mode="HTML")
+
+
+async def view_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    events = get_user_events(update.effective_user.id)
+    if not events:
+        await update.message.reply_text(
+            "📅 <b>Your Cloud Calendar is empty!</b>\n\n"
+            "Add an event easily with:\n"
+            "<code>/addevent 5 Dec | C Programming Lab Exam</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    today = datetime.now(IST).date()
+    lines = ["📅 <b>Your Saved Cloud Calendar:</b>\n"]
+    for idx, ev in enumerate(events, start=1):
+        ev_date = datetime.strptime(ev["date"], "%Y-%m-%d").date()
+        days_left = (ev_date - today).days
+        if days_left == 0:
+            badge = "🔥 <b>TODAY</b>"
+        elif days_left == 1:
+            badge = "⏰ <b>TOMORROW</b>"
+        elif days_left > 1:
+            badge = f"⏳ <i>{days_left} days left</i>"
+        else:
+            badge = f"✅ <i>{abs(days_left)} days ago</i>"
+        lines.append(f"<b>{idx}.</b> <code>{ev['date']}</code> — {ev['title']} ({badge})")
+
+    lines.append("\n<i>Tip: Use</i> <code>/delevent 1</code> <i>to remove an event.</i>")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def delete_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "⚠️ Usage: <code>/delevent 1</code> (check numbers using <code>/calendar</code>)",
+            parse_mode="HTML",
+        )
+        return
+
+    index = int(context.args[0]) - 1
+    events = get_user_events(update.effective_user.id)
+    if index < 0 or index >= len(events):
+        await update.message.reply_text("⚠️ Invalid event number. Run <code>/calendar</code> to check.", parse_mode="HTML")
+        return
+
+    target = events[index]
+    try:
+        events_col.delete_one({"_id": target["_id"]})
+        await update.message.reply_text(
+            f"🗑️ Removed: <b>{target['title']}</b> (<code>{target['date']}</code>)",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error deleting event: <code>{e}</code>", parse_mode="HTML")
+
+
+# ==========================================
+# 7. Diagnostic, Profile & AI Study Commands
+# ==========================================
+async def db_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        mongo_client.admin.command("ping")
+        await update.message.reply_text(
+            "✅ <b>Cloud Storage Connected!</b> Profile, Calendar &amp; Progress logs active.",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ <b>Database Error:</b>\n<code>{e}</code>",
+            parse_mode="HTML",
+        )
+
+
+async def view_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    profile = get_user_profile(update.effective_user.id)
+    if not profile:
+        await update.message.reply_text("No profile found yet! Send /setup to save your details.")
+        return
+
+    await update.message.reply_text(
+        "🪪 <b>Your Saved LearnPulse Profile:</b>\n\n"
+        f"👤 <b>Name:</b> {profile['name']}\n"
+        f"🎓 <b>Class:</b> {profile['class']}\n"
+        f"📚 <b>Studying:</b> {profile['studying']}",
+        parse_mode="HTML",
+    )
+
+
+def calculate_weights(subjects_raw: str) -> dict:
+    items = []
+    for entry in subjects_raw.split(","):
+        parts = [p.strip() for p in entry.split(":")]
+        if len(parts) == 3:
+            name, diff, days = parts[0], float(parts[1]), max(int(parts[2]), 1)
+            items.append({"name": name, "score": diff / days})
+    total = sum(i["score"] for i in items) or 1
+    return {i["name"]: round((i["score"] / total) * 100, 1) for i in items}
+
+
+async def generate_plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args)
+    if "|" not in text:
+        await update.message.reply_text(
+            "⚠️ Example:\n<code>/plan DBMS:5:4, OS:3:7, Maths:4:10 | 4</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    user_id = update.effective_user.id
+    profile = get_user_profile(user_id)
+    events = get_user_events(user_id)
+
+    student_context = (
+        f"Student Name: {profile['name']}, Class: {profile['class']}, Subjects: {profile['studying']}."
+        if profile
+        else "Student profile not set yet."
+    )
+    calendar_context = format_events_summary(events)
+
+    status_msg = await update.message.reply_text("⚡ Generating personalized schedule...")
+
+    try:
+        subjects_part, hours_part = text.split("|", 1)
+        daily_hours = int(hours_part.strip())
+        weights = calculate_weights(subjects_part)
+
+        prompt = f"""
+        Act as an academic coach for LearnPulse OS 2.0.
+        {student_context}
+        Upcoming Saved Calendar Events:
+        {calendar_context}
+        Subject priority weights: {weights}
+        Daily study capacity: {daily_hours} hours (reserve 1 hour daily for revision).
+
+        {PRIVACY_AND_FORMAT_RULES}
+        """
+
+        resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        await edit_safe_html(status_msg, resp.choices[0].message.content)
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Error: {e}")
+
+
+async def handle_natural_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_text = update.message.text
+    profile = get_user_profile(user_id)
+    events = get_user_events(user_id)
+
+    student_context = (
+        f"Name: {profile['name']}, Class: {profile['class']}, Studying: {profile['studying']}"
+        if profile
+        else "Profile not set yet (remind user they can run /setup)."
+    )
+    calendar_context = format_events_summary(events)
+
+    status_msg = await update.message.reply_text("⚡ Thinking...")
+
+    prompt = f"""
+    You are LearnPulse OS 2.0 (developed by Viswesh and team | Dept of CSE), an AI Study Planner & Tutor.
+    Student Profile: {student_context}
+    Upcoming Saved Calendar Events:
+    {calendar_context}
+    User message: "{user_text}"
+
+    Personalize using the student's name, class, subjects, and upcoming calendar dates naturally.
+    {PRIVACY_AND_FORMAT_RULES}
+    """
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        await edit_safe_html(status_msg, resp.choices[0].message.content)
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Error: {e}")
+
+
+# ==========================================
+# 8. Main Entry Point
+# ==========================================
+def main():
+    threading.Thread(target=start_health_server, daemon=True).start()
+
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    onboarding_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", start_or_setup),
+            CommandHandler("setup", start_or_setup),
+        ],
+        states={
+            ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name)],
+            ASK_CLASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_class)],
+            ASK_STUDYING: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_studying)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_setup)],
+    )
+
+    app.add_handler(onboarding_conv)
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("done", log_done))
+    app.add_handler(CommandHandler("progress", view_progress))
+    app.add_handler(CommandHandler("addevent", add_event))
+    app.add_handler(CommandHandler("calendar", view_calendar))
+    app.add_handler(CommandHandler("delevent", delete_event))
+    app.add_handler(CommandHandler("dbcheck", db_check))
+    app.add_handler(CommandHandler("profile", view_profile))
+    app.add_handler(CommandHandler("plan", generate_plan_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural_message))
+
+    print("🤖 LearnPulse OS 2.0 (Full Suite + Privacy Guard) is running...")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
