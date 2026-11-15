@@ -1,7 +1,7 @@
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from google import genai
+from groq import Groq
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -9,16 +9,19 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 # 1. Configuration (Loaded from Render Environment)
 # ==========================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-client = genai.Client(
-    vertexai=True,
-    api_key=GEMINI_API_KEY,
-)
+if not TELEGRAM_TOKEN or not GROQ_API_KEY:
+    raise RuntimeError(
+        "Missing TELEGRAM_TOKEN or GROQ_API_KEY in Render Environment Variables!"
+    )
+
+client = Groq(api_key=GROQ_API_KEY)
+MODEL_NAME = "llama-3.3-70b-versatile"
 
 
 # ==========================================
-# 2. Tiny Health-Check Server for Render Free Tier
+# 2. Health-Check Server for Render Free Tier
 # ==========================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -91,10 +94,11 @@ async def generate_plan_command(update: Update, context: ContextTypes.DEFAULT_TY
         3. Top 3 Practical Study Tips
         """
 
-        resp = client.models.generate_content(
-            model="gemini-3.5-flash-lite", contents=prompt
+        resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
         )
-        await status_msg.edit_text(resp.text, parse_mode="HTML")
+        await status_msg.edit_text(resp.choices[0].message.content, parse_mode="HTML")
 
     except Exception as e:
         await status_msg.edit_text(f"❌ Error generating plan: {e}")
@@ -114,10 +118,11 @@ async def handle_natural_message(update: Update, context: ContextTypes.DEFAULT_T
     - Generate a structured daily study timetable and end with 3 practical study tips under 3500 characters.
     """
     try:
-        resp = client.models.generate_content(
-            model="gemini-3.5-flash-lite", contents=prompt
+        resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
         )
-        await status_msg.edit_text(resp.text, parse_mode="HTML")
+        await status_msg.edit_text(resp.choices[0].message.content, parse_mode="HTML")
     except Exception as e:
         await status_msg.edit_text(f"❌ Error: {e}")
 
@@ -126,7 +131,6 @@ async def handle_natural_message(update: Update, context: ContextTypes.DEFAULT_T
 # 4. Main Entry Point
 # ==========================================
 def main():
-    # Start dummy HTTP server in background for Render health checks
     threading.Thread(target=start_health_server, daemon=True).start()
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -134,7 +138,7 @@ def main():
     app.add_handler(CommandHandler("plan", generate_plan_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural_message))
 
-    print("🤖 LearnPulse Telegram Bot is running...")
+    print("🤖 LearnPulse Telegram Bot (Groq) is running...")
     app.run_polling()
 
 
