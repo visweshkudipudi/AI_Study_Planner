@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import threading
@@ -5,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from groq import Groq
 from pymongo import MongoClient
-from telegram import Update
+from telegram import Poll, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -237,6 +238,8 @@ HELP_TEXT = (
     "👤 <b>Profile &amp; Setup</b>\n"
     "• <code>/setup</code> — Set or update your name, class &amp; subjects\n"
     "• <code>/profile</code> — View your saved profile\n\n"
+    "🧠 <b>Interactive Quizzes</b>\n"
+    "• <code>/quiz C Programming Pointers</code> — Start a 3-question MCQ quiz\n\n"
     "📅 <b>Cloud Calendar</b>\n"
     "• <code>/addevent 5 Dec | Linear Algebra Mid</code> — Save an exam or deadline\n"
     "• <code>/calendar</code> — View all upcoming dates &amp; countdown\n"
@@ -265,7 +268,7 @@ async def start_or_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚡ <b>Welcome back, {existing['name']}!</b>\n"
                 f"🎓 <b>Class:</b> {existing['class']}\n"
                 f"📚 <b>Studying:</b> {existing['studying']}\n\n"
-                "Send <code>/help</code> to see all commands or ask any study question!",
+                "Send <code>/help</code> to see all commands or <code>/quiz</code> to test yourself!",
                 parse_mode="HTML",
             )
             return ConversationHandler.END
@@ -333,7 +336,82 @@ async def cancel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 5. Progress & Streak Tracker (/done, /progress)
+# 5. Interactive Native Telegram Quiz (/quiz)
+# ==========================================
+async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    profile = get_user_profile(user_id)
+
+    topic = " ".join(context.args).strip()
+    if not topic:
+        topic = profile["studying"] if profile else "Computer Science & Mathematics"
+
+    level_hint = f"for a {profile['class']} student" if profile else "at undergraduate engineering level"
+    status_msg = await update.message.reply_text(
+        f"🧠 <b>Generating 3 interactive quiz questions on:</b> <i>{topic}</i>...",
+        parse_mode="HTML",
+    )
+
+    prompt = f"""
+    Create 3 multiple-choice quiz questions on "{topic}" {level_hint}.
+    Return ONLY a valid JSON array of 3 objects. Do not include markdown fences or extra text.
+    Each object must follow this exact schema:
+    {{
+      "question": "Clear question text (max 250 chars)",
+      "options": ["Option A (max 90 chars)", "Option B", "Option C", "Option D"],
+      "correct_index": 0,
+      "explanation": "Concise explanation of why the answer is right (max 180 chars)"
+    }}
+    """
+
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw_text = resp.choices[0].message.content.strip()
+        json_match = re.search(r"\[.*\]", raw_text, re.DOTALL)
+        if not json_match:
+            raise ValueError("Could not parse quiz JSON.")
+
+        questions = json.loads(json_match.group(0))
+        await status_msg.delete()
+
+        for idx, item in enumerate(questions[:3], start=1):
+            q_text = f"Q{idx}. {item['question']}"[:295]
+            opts = [str(opt)[:95] for opt in item["options"][:4]]
+            correct_id = int(item.get("correct_index", 0))
+            if correct_id < 0 or correct_id >= len(opts):
+                correct_id = 0
+            expl = str(item.get("explanation", ""))[:195]
+
+            await context.bot.send_poll(
+                chat_id=update.effective_chat.id,
+                question=q_text,
+                options=opts,
+                type=Poll.QUIZ,
+                correct_option_id=correct_id,
+                explanation=expl,
+                is_anonymous=False,
+            )
+
+        now_ist = datetime.now(IST)
+        logs_col.insert_one(
+            {
+                "user_id": user_id,
+                "topic": f"Quiz: {topic}",
+                "date": now_ist.strftime("%Y-%m-%d"),
+                "time": now_ist.strftime("%I:%M %p"),
+                "created_at": now_ist,
+            }
+        )
+    except Exception as e:
+        await status_msg.edit_text(f"⚠️ Couldn't generate quiz right now. Try <code>/quiz C Arrays</code>.", parse_mode="HTML")
+        print(f"[QUIZ ERROR] {e}")
+
+
+# ==========================================
+# 6. Progress & Streak Tracker (/done, /progress)
 # ==========================================
 async def log_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic = " ".join(context.args).strip()
@@ -411,7 +489,7 @@ async def view_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 6. Cloud Calendar Commands (/addevent, /calendar, /delevent)
+# 7. Cloud Calendar Commands (/addevent, /calendar, /delevent)
 # ==========================================
 async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = " ".join(context.args).strip()
@@ -514,13 +592,13 @@ async def delete_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 7. Diagnostic, Profile & AI Study Commands
+# 8. Diagnostic, Profile & AI Study Commands
 # ==========================================
 async def db_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         mongo_client.admin.command("ping")
         await update.message.reply_text(
-            "✅ <b>Cloud Storage Connected!</b> Profile, Calendar &amp; Progress logs active.",
+            "✅ <b>Cloud Storage Connected!</b> Profile, Calendar, Quiz &amp; Progress logs active.",
             parse_mode="HTML",
         )
     except Exception as e:
@@ -639,7 +717,7 @@ async def handle_natural_message(update: Update, context: ContextTypes.DEFAULT_T
 
 
 # ==========================================
-# 8. Main Entry Point
+# 9. Main Entry Point
 # ==========================================
 def main():
     threading.Thread(target=start_health_server, daemon=True).start()
@@ -661,6 +739,7 @@ def main():
 
     app.add_handler(onboarding_conv)
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("quiz", quiz_command))
     app.add_handler(CommandHandler("done", log_done))
     app.add_handler(CommandHandler("progress", view_progress))
     app.add_handler(CommandHandler("addevent", add_event))
@@ -671,7 +750,7 @@ def main():
     app.add_handler(CommandHandler("plan", generate_plan_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural_message))
 
-    print("🤖 LearnPulse OS 2.0 (Full Suite + Privacy Guard) is running...")
+    print("🤖 LearnPulse OS 2.0 (Full Suite + Interactive Quiz) is running...")
     app.run_polling(drop_pending_updates=True)
 
 
