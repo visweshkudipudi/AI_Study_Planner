@@ -11,6 +11,7 @@ st.set_page_config(
     page_title="LearnPulse OS 2.0 | Adaptive AI Study Planner",
     page_icon="⚡",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 # Replace with your actual Telegram bot username (without '@')
@@ -74,70 +75,219 @@ def parse_uploaded_txt(content: str) -> list[dict]:
 
 
 # ==========================================
-# 2. Styling & Header with Telegram Bot CTA
+# 2. Cyber-Glassmorphism Theme & Custom CSS
 # ==========================================
 st.markdown(
     """
     <style>
-    .hero-card {
-        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-        padding: 1.6rem;
-        border-radius: 14px;
-        border: 1px solid #334155;
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+
+    /* Global Font & Ambient Mesh Background */
+    html, body, [class*="css"] {
+        font-family: 'Plus Jakarta Sans', sans-serif !important;
+    }
+
+    .stApp {
+        background-color: #050811;
+        background-image:
+            radial-gradient(at 10% 10%, rgba(56, 189, 248, 0.14) 0px, transparent 45%),
+            radial-gradient(at 90% 15%, rgba(139, 92, 246, 0.16) 0px, transparent 45%),
+            radial-gradient(at 50% 95%, rgba(16, 185, 129, 0.10) 0px, transparent 50%);
+        color: #f1f5f9;
+    }
+
+    /* Hide default Streamlit top header bar clutter */
+    header[data-testid="stHeader"] {
+        background: transparent !important;
+    }
+
+    /* Glassmorphic Sidebar */
+    section[data-testid="stSidebar"] {
+        background: rgba(10, 15, 30, 0.78) !important;
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+        border-right: 1px solid rgba(148, 163, 184, 0.12);
+    }
+
+    /* Hero Banner Card */
+    .hero-glass {
+        position: relative;
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.85) 0%, rgba(30, 27, 75, 0.75) 100%);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        padding: 1.8rem 2rem;
+        border-radius: 20px;
+        border: 1px solid rgba(56, 189, 248, 0.28);
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08);
         margin-bottom: 1.2rem;
     }
-    .hero-title {
-        font-size: 2rem;
-        font-weight: 800;
-        color: #f8fafc;
-        margin-bottom: 0.25rem;
+
+    .hero-badge {
+        display: inline-block;
+        padding: 0.28rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #38bdf8;
+        background: rgba(56, 189, 248, 0.12);
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        margin-bottom: 0.65rem;
     }
+
+    .hero-title {
+        font-size: 2.35rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        background: linear-gradient(90deg, #ffffff 0%, #38bdf8 50%, #a78bfa 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin: 0 0 0.35rem 0;
+        line-height: 1.15;
+    }
+
     .hero-sub {
         color: #94a3b8;
         font-size: 0.98rem;
-        margin-bottom: 0;
+        margin: 0;
+    }
+
+    /* Bot CTA Card */
+    .cta-glass {
+        background: rgba(15, 23, 42, 0.72);
+        backdrop-filter: blur(16px);
+        padding: 1.25rem;
+        border-radius: 18px;
+        border: 1px solid rgba(139, 92, 246, 0.30);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+        text-align: center;
+    }
+
+    /* Glowing Metric Cards */
+    div[data-testid="stMetric"] {
+        background: rgba(15, 23, 42, 0.68) !important;
+        backdrop-filter: blur(14px);
+        border: 1px solid rgba(56, 189, 248, 0.22) !important;
+        border-radius: 16px !important;
+        padding: 1rem 1.2rem !important;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+
+    div[data-testid="stMetric"]:hover {
+        transform: translateY(-2px);
+        border-color: rgba(56, 189, 248, 0.55) !important;
+    }
+
+    div[data-testid="stMetricValue"] {
+        font-family: 'JetBrains Mono', monospace !important;
+        font-weight: 700 !important;
+        color: #38bdf8 !important;
+    }
+
+    /* Modern Pill Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+        background: rgba(15, 23, 42, 0.65);
+        padding: 0.45rem;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 10px !important;
+        padding: 0.55rem 1.2rem !important;
+        font-weight: 600 !important;
+        color: #94a3b8 !important;
+        border: none !important;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #0284c7 0%, #6366f1 100%) !important;
+        color: #ffffff !important;
+        box-shadow: 0 4px 16px rgba(56, 189, 248, 0.32);
+    }
+
+    /* Gradient Primary Buttons & Link Buttons */
+    .stButton > button[kind="primary"],
+    a[data-testid="stLinkButton-primary"] {
+        background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%) !important;
+        border: 1px solid rgba(255, 255, 255, 0.15) !important;
+        border-radius: 12px !important;
+        color: #ffffff !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.01em;
+        box-shadow: 0 6px 20px rgba(14, 165, 233, 0.35) !important;
+        transition: all 0.2s ease !important;
+    }
+
+    .stButton > button[kind="primary"]:hover,
+    a[data-testid="stLinkButton-primary"]:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 28px rgba(99, 102, 241, 0.5) !important;
+    }
+
+    /* Glass Containers for Forms & Tables */
+    div[data-testid="stForm"],
+    div[data-testid="stDataFrame"] {
+        background: rgba(15, 23, 42, 0.60) !important;
+        border: 1px solid rgba(148, 163, 184, 0.15) !important;
+        border-radius: 16px !important;
+        padding: 1rem !important;
+    }
+
+    code {
+        font-family: 'JetBrains Mono', monospace !important;
+        color: #38bdf8 !important;
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-col_hero, col_cta = st.columns([3, 1], vertical_alignment="center")
+# ==========================================
+# 3. Header & Direct Telegram Bot Launch
+# ==========================================
+col_hero, col_cta = st.columns([3.1, 1.1], vertical_alignment="center")
 
 with col_hero:
     st.markdown(
         """
-        <div class="hero-card">
-            <div class="hero-title">⚡ LearnPulse OS 2.0</div>
-            <p class="hero-sub">Adaptive AI Study Planner, Smart Re-Balancer &amp; Exam Calendar • Developed by Viswesh &amp; Team (Dept of CSE)</p>
+        <div class="hero-glass">
+            <div class="hero-badge">⚡ AI-Assisted Academic Engine</div>
+            <h1 class="hero-title">LearnPulse OS 2.0</h1>
+            <p class="hero-sub">Adaptive Priority Matrix, Dynamic Re-Balancer &amp; Exam Countdown Suite • Developed by Viswesh &amp; Team (Dept of CSE)</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 with col_cta:
+    st.markdown('<div class="cta-glass">', unsafe_allow_html=True)
     st.link_button(
-        "🤖 Open Telegram Bot",
+        "🤖 Launch Telegram Bot",
         TELEGRAM_BOT_URL,
         type="primary",
         use_container_width=True,
     )
-    st.caption("Cloud Sync • MCQ Quizzes • Daily Streaks")
+    st.caption("✨ Cloud Sync • MCQ Quizzes • Streaks")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # ==========================================
-# 3. Sidebar: Student Profile & Telegram Link
+# 4. Sidebar: Student Profile & Telegram Link
 # ==========================================
 with st.sidebar:
-    st.header("🎓 Student Profile")
+    st.markdown("### 🎓 Student Profile")
     student_name = st.text_input("Your Name", value="Viswesh")
     student_branch = st.text_input("Class / Branch", value="B.Tech CSE 1st Year")
     daily_hours = st.slider("Daily Study Capacity (Hours)", min_value=1, max_value=12, value=4)
 
     st.divider()
-    st.subheader("📱 Telegram Companion")
-    st.write("Track streaks, take `/quiz` polls, and save exam dates on mobile:")
+    st.markdown("### 📱 Mobile Companion")
+    st.caption("Log sessions (`/done`), take interactive `/quiz` polls, and manage your cloud `/calendar` anywhere:")
     st.link_button(
-        "💬 Launch LearnPulse Bot",
+        "💬 Open LearnPulse Bot",
         TELEGRAM_BOT_URL,
         use_container_width=True,
     )
@@ -161,7 +311,7 @@ def get_calendar_context() -> str:
 
 
 # ==========================================
-# 4. Main Feature Tabs
+# 5. Main Feature Tabs
 # ==========================================
 tab_planner, tab_rebalancer, tab_calendar = st.tabs(
     ["📊 Priority Study Planner", "🔄 Smart Re-Balancer", "📅 Exam & Deadline Calendar"]
@@ -172,7 +322,7 @@ tab_planner, tab_rebalancer, tab_calendar = st.tabs(
 # ------------------------------------------
 with tab_planner:
     st.subheader("📊 Weighted Subject Priority Matrix")
-    st.caption("Configure your subjects below to visualize live urgency weights, daily time blocks, and AI roadmaps.")
+    st.caption("Adjust difficulty and exam proximity to visualize live urgency weights, time allocations, and AI roadmaps.")
 
     num_subjects = st.number_input("Number of Subjects", min_value=1, max_value=8, value=3)
 
@@ -245,11 +395,11 @@ with tab_planner:
         g_col1, g_col2 = st.columns(2)
         with g_col1:
             st.markdown("**🎯 Urgency Share by Subject (%)**")
-            st.bar_chart(df_priority.set_index("Subject")[["Priority (%)"]], color="#3b82f6", height=280)
+            st.bar_chart(df_priority.set_index("Subject")[["Priority (%)"]], color="#38bdf8", height=280)
 
         with g_col2:
             st.markdown(f"**⏱️ Daily Time Split ({effective_study_hours}h Focus + {revision_hours}h Revision)**")
-            st.bar_chart(df_priority.set_index("Subject")[["Daily Study (Hrs)"]], color="#10b981", height=280)
+            st.bar_chart(df_priority.set_index("Subject")[["Daily Study (Hrs)"]], color="#8b5cf6", height=280)
 
         st.markdown("**📋 Priority Matrix Breakdown Table**")
         st.dataframe(
@@ -350,6 +500,7 @@ with tab_rebalancer:
         st.markdown("**📊 Re-Balanced Daily Workload (Baseline vs. Catch-Up)**")
         st.bar_chart(
             df_recovery.set_index("Day")[["Baseline Hours", "Recovery Catch-Up"]],
+            color=["#38bdf8", "#a855f7"],
             height=260,
         )
     with vis_r2:
@@ -471,7 +622,7 @@ with tab_calendar:
             st.dataframe(df_cal[["Date", "Event", "Status"]], use_container_width=True, hide_index=True)
         with cal_v2:
             st.markdown("**⏳ Days Remaining Countdown Graph**")
-            st.bar_chart(df_cal.set_index("Event")[["Days Remaining"]], color="#f59e0b", height=230)
+            st.bar_chart(df_cal.set_index("Event")[["Days Remaining"]], color="#38bdf8", height=230)
 
         st.markdown("**Manage Saved Events:**")
         for idx, ev in enumerate(sorted_events):
