@@ -189,11 +189,11 @@ button {
 .stat-label { font-size: 0.7rem; text-transform: uppercase; color: var(--muted); font-weight: 700; }
 .stat-box strong { font-size: 0.96rem; color: var(--text); }
 
-/* OS Tabs */
+/* 5-Module OS Dock Tabs */
 .os-tabs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.45rem;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.4rem;
   margin-top: 0.85rem;
   background: var(--surface);
   padding: 0.35rem;
@@ -204,10 +204,15 @@ button {
 .tab-btn {
   background: transparent;
   color: var(--muted);
-  padding: 0.58rem 0.4rem;
+  padding: 0.52rem 0.25rem;
   font-size: 0.82rem;
   border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
 }
+.tab-btn em { font-style: normal; }
 
 .tab-btn.active {
   background: var(--surface-2);
@@ -228,7 +233,7 @@ button {
   background: var(--surface-2);
   color: var(--text);
   border: 1px solid var(--border);
-  padding: 0.45rem 0.75rem;
+  padding: 0.44rem 0.72rem;
   font-size: 0.78rem;
   border-radius: 8px;
 }
@@ -298,7 +303,7 @@ button {
 .task-meta { font-size: 0.74rem; color: var(--primary); font-weight: 700; }
 .task-topic { font-size: 0.9rem; margin-top: 0.12rem; }
 
-.task-actions { display: flex; gap: 0.35rem; flex-shrink: 0; }
+.task-actions { display: flex; gap: 0.35rem; flex-shrink: 0; flex-wrap: wrap; }
 .mini-ai-btn {
   background: var(--surface-2);
   color: #cbd5e1;
@@ -308,6 +313,88 @@ button {
   font-size: 0.73rem;
 }
 .mini-ai-btn:hover { border-color: var(--primary); color: var(--primary); }
+
+/* Exclusive PulseBot Chat UI */
+.chat-shell { display: flex; flex-direction: column; gap: 0.75rem; }
+.chat-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.6rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.65rem;
+}
+
+.chat-messages {
+  height: 52vh;
+  min-height: 310px;
+  max-height: 520px;
+  overflow-y: auto;
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.msg-row { display: flex; flex-direction: column; max-width: 86%; }
+.msg-row.user { align-self: flex-end; align-items: flex-end; }
+.msg-row.assistant { align-self: flex-start; align-items: flex-start; }
+
+.msg-sender { font-size: 0.7rem; color: var(--muted); margin-bottom: 0.2rem; font-weight: 700; }
+.msg-bubble {
+  padding: 0.68rem 0.85rem;
+  border-radius: 14px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.msg-row.user .msg-bubble {
+  background: linear-gradient(135deg, #38bdf8, #10b981);
+  color: #041b24;
+  font-weight: 600;
+  border-bottom-right-radius: 4px;
+}
+.msg-row.assistant .msg-bubble {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-bottom-left-radius: 4px;
+}
+.msg-bubble pre {
+  background: #070d1a;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem;
+  overflow-x: auto;
+  margin: 0.45rem 0;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  color: #bae6fd;
+}
+.msg-bubble code {
+  background: rgba(56, 189, 248, 0.14);
+  padding: 0.1rem 0.35rem;
+  border-radius: 5px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+}
+.msg-bubble pre code { background: transparent; padding: 0; }
+
+.quick-prompts {
+  display: flex;
+  gap: 0.4rem;
+  overflow-x: auto;
+  padding-bottom: 0.15rem;
+  scrollbar-width: none;
+}
+.quick-prompts::-webkit-scrollbar { display: none; }
+.quick-prompts .chip-btn { white-space: nowrap; }
+
+.chat-input-bar { display: flex; gap: 0.5rem; align-items: center; }
+.chat-send-btn { width: auto; margin-top: 0; padding: 0.65rem 1.05rem; white-space: nowrap; }
 
 /* Form Grid */
 .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1.2fr; gap: 0.65rem; }
@@ -398,10 +485,11 @@ button {
 @media (max-width: 680px) {
   .stats-strip { grid-template-columns: repeat(2, 1fr); }
   .grid-3, .analytics-grid { grid-template-columns: 1fr; }
-  .tab-btn { font-size: 0.75rem; padding: 0.55rem 0.25rem; }
+  .tab-btn { flex-direction: column; gap: 0.12rem; font-size: 0.72rem; padding: 0.45rem 0.2rem; }
   .task-row { flex-direction: column; }
   .task-actions { width: 100%; justify-content: flex-end; }
   .timer-big { font-size: 2.8rem; }
+  .msg-row { max-width: 94%; }
 }
 
 /* Clean White PDF / Print Layout */
