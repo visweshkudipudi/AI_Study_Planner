@@ -1,866 +1,1516 @@
+"""
+LearnPulse OS - Backend API
+Developed by Viswesh & Team, Dept of CSE
+
+FastAPI + MongoDB Atlas + Groq (openai/gpt-oss-120b).
+Everything lives in one MongoDB document per student inside the isolated
+collection `learnpulse_os_accounts`.
+
+Auth: every request after /api/auth sends two headers:
+    X-Username: <username>
+    X-Token:    <token returned by /api/auth>
+"""
+
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
+import time
 import uuid
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from fastapi import FastAPI, HTTPException
+from typing import Any, Dict, List, Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from groq import Groq
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, field_validator
 from pymongo import MongoClient
 
-app = FastAPI(title="LearnPulse OS v3 API — Viswesh & Team, Dept of CSE")
+# --------------------------------------------------------------------------
+# Config
+# --------------------------------------------------------------------------
+DB_NAME = os.environ.get("MONGO_DB", "ai_study_planner")
+COLLECTION = "learnpulse_os_accounts"
+MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+
+DAY_MIN_START = 6 * 60      # 6:00 AM
+DAY_MAX_END = 23 * 60       # 11:00 PM
+MAX_PLANS = 12
+HABIT_HORIZON = 14
+
+DEFAULT_SETTINGS = {
+    "study_start": "09:00",
+    "study_end": "21:00",
+    "buffer_min": 15,
+    "max_daily_hours": 6,
+    "weekly_goal_hours": 10,
+    "defense_mode": "proactive",   # proactive | reactive
+    "default_session": 50,
+}
+
+BLOCK_TYPES = {"focus", "task", "habit", "fixed"}
+PRIORITIES = ["P1", "P2", "P3", "P4"]
+
+app = FastAPI(title="LearnPulse OS API", version="6.0")
+
+
+@app.middleware("http")
+async def catch_all_errors(request, call_next):
+    # Keeps unexpected errors as JSON so CORS headers are still attached.
+    try:
+        return await call_next(request)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(
+            {"detail": "Server error: " + type(e).__name__ + " - " + str(e)[:160]},
+            status_code=500,
+        )
+
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-MONGO_URI = os.getenv("MONGO_URI", "")
-DB_NAME = os.getenv("MONGO_DB_NAME", "ai_study_planner")
-COLLECTION_NAME = os.getenv("WEB_COLLECTION_NAME", "learnpulse_os_accounts")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
-
-mongo_client = MongoClient(MONGO_URI) if MONGO_URI else None
-accounts_col = mongo_client[DB_NAME][COLLECTION_NAME] if mongo_client else None
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-
-DEFAULT_SETTINGS = {
-    "study_start": "07:00",
-    "study_end": "22:30",
-    "focus_goal_hours": 14,
-    "defense_mode": "proactive",
-    "auto_buffers": True,
-    "buffer_minutes": 15,
-}
+# --------------------------------------------------------------------------
+# Small helpers
+# --------------------------------------------------------------------------
+_mongo = None
 
 
-# -------------------- Helpers --------------------
-def hash_pin(user_id: str, pin: str) -> str:
-    raw = f"learnpulse::{user_id.strip().lower()}::{pin.strip()}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+def col():
+    global _mongo
+    if _mongo is None:
+        uri = os.environ.get("MONGO_URI")
+        if not uri:
+            raise HTTPException(500, "MONGO_URI is not configured on the server")
+        _mongo = MongoClient(uri, serverSelectionTimeoutMS=8000)
+    return _mongo[DB_NAME][COLLECTION]
 
 
-def parse_minutes(duration_str: str) -> int:
-    text = str(duration_str or "").lower()
-    hours = re.search(r"(\d+(?:\.\d+)?)\s*(?:hr|hour|h)\b", text)
-    mins = re.search(r"(\d+)\s*(?:min|m)\b", text)
-    total = 0
-    if hours:
-        total += int(float(hours.group(1)) * 60)
-    if mins:
-        total += int(mins.group(1))
-    return total if total > 0 else 45
+def bad(msg: str, code: int = 400):
+    raise HTTPException(code, msg)
 
 
-def time_to_minutes(t_str: str, fallback: int = 540) -> int:
-    m = re.match(r"^(\d{1,2}):(\d{2})$", str(t_str or "").strip())
+def sha(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def uid_of(username: str) -> str:
+    return re.sub(r"\s+", " ", (username or "").strip()).lower()
+
+
+def parse_hm(s: Any) -> int:
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(s).strip())
     if not m:
-        return fallback
-    hh, mm = int(m.group(1)), int(m.group(2))
-    return max(360, min(1350, hh * 60 + mm))
+        bad("Invalid time '" + str(s) + "' (use HH:MM)")
+    h, mi = int(m.group(1)), int(m.group(2))
+    if h > 23 or mi > 59:
+        bad("Invalid time '" + str(s) + "'")
+    return h * 60 + mi
 
 
-def minutes_to_time(total_mins: int) -> str:
-    clamped = max(360, min(1350, int(total_mins)))
-    return f"{clamped // 60:02d}:{clamped % 60:02d}"
+def min_to_hm(m: int) -> str:
+    return "%02d:%02d" % (m // 60, m % 60)
 
 
-def update_streak(doc: dict) -> tuple[int, str]:
-    today = date.today()
-    today_str = today.isoformat()
-    last_str = doc.get("last_active_date", "")
-    streak = int(doc.get("streak", 0))
-    if last_str == today_str:
-        return max(streak, 1), today_str
-    yesterday_str = (today - timedelta(days=1)).isoformat()
-    if last_str == yesterday_str:
-        return streak + 1, today_str
-    return 1, today_str
+def parse_date(s: Any) -> date:
+    try:
+        return date.fromisoformat(str(s))
+    except Exception:  # noqa: BLE001
+        bad("Invalid date '" + str(s) + "' (use YYYY-MM-DD)")
 
 
-def normalize_plan_tasks(plan: dict, settings: dict) -> dict:
-    start_floor = time_to_minutes(settings.get("study_start", "07:00"), 420)
-    buf = int(settings.get("buffer_minutes", 15)) if settings.get("auto_buffers", True) else 0
-
-    for d_idx, day in enumerate(plan.get("days", [])):
-        if "day" not in day:
-            day["day"] = d_idx + 1
-        cursor = start_floor + 60  # Default 8:00 AM if legacy tasks lack times
-        for t_idx, task in enumerate(day.get("tasks", [])):
-            if not task.get("id"):
-                task["id"] = f"d{day['day']}-t{t_idx + 1}-{uuid.uuid4().hex[:4]}"
-            dur_min = int(task.get("duration_min") or parse_minutes(task.get("duration", "45 min")))
-            dur_min = max(15, min(240, dur_min))
-            task["duration_min"] = dur_min
-            task["duration"] = f"{dur_min} min"
-
-            if not re.match(r"^\d{2}:\d{2}$", str(task.get("start_time", ""))):
-                task["start_time"] = minutes_to_time(cursor)
-                cursor += dur_min + buf
-            else:
-                cursor = max(cursor, time_to_minutes(task["start_time"]) + dur_min + buf)
-
-            if task.get("priority") not in ("P1", "P2", "P3", "P4"):
-                task["priority"] = "P1" if t_idx == 0 else "P2"
-            if task.get("block_type") not in ("task", "focus", "habit", "fixed"):
-                task["block_type"] = "task"
-            if task.get("defense") not in ("busy", "free"):
-                task["defense"] = "busy" if task["priority"] in ("P1", "P2") else "free"
-            task["locked"] = bool(task.get("locked", False))
-            task["done"] = bool(task.get("done", False))
-    return plan
+def today_or_default(s: Optional[str]) -> date:
+    if s:
+        try:
+            return date.fromisoformat(s)
+        except Exception:  # noqa: BLE001
+            pass
+    return date.today()
 
 
-def sanitize_account(doc: dict) -> dict:
-    settings = {**DEFAULT_SETTINGS, **(doc.get("settings") or {})}
-    plans = [normalize_plan_tasks(p, settings) for p in doc.get("plans", [])]
+def clamp(v: Any, lo: int, hi: int, default: int) -> int:
+    try:
+        v = int(round(float(v)))
+    except Exception:  # noqa: BLE001
+        return default
+    return max(lo, min(hi, v))
+
+
+def prio_rank(p: str) -> int:
+    return {"P1": 0, "P2": 1, "P3": 2, "P4": 3}.get(p, 2)
+
+
+# --------------------------------------------------------------------------
+# Document handling
+# --------------------------------------------------------------------------
+def doc_defaults() -> Dict[str, Any]:
     return {
-        "user_id": doc["user_id"],
-        "streak": doc.get("streak", 0),
-        "last_active_date": doc.get("last_active_date", ""),
-        "logged_minutes": doc.get("logged_minutes", 0),
-        "settings": settings,
-        "habits": doc.get("habits", []),
-        "plans": plans,
-        "chat_history": doc.get("chat_history", [])[-30:],
+        "username": "",
+        "pin_hash": "",
+        "created_at": now_iso(),
+        "tokens": [],
+        "fails": 0,
+        "locked_until": 0.0,
+        "streak": 0,
+        "last_done_date": None,
+        "activity": {},
+        "plans": [],
+        "active_plan_id": None,
+        "habits": [],
+        "habit_skips": [],
+        "settings": dict(DEFAULT_SETTINGS),
+        "focus_sessions": [],
+        "chat": [],
+        "weak_topics": [],
     }
 
 
-def require_verified_user(user_id: str, pin: str) -> dict:
-    if accounts_col is None:
-        raise HTTPException(status_code=500, detail="MONGO_URI not configured on Render")
-    clean_user = user_id.strip().lower()
-    doc = accounts_col.find_one({"user_id": clean_user})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Account not found. Please sign in first.")
-    if doc.get("pin_hash") != hash_pin(clean_user, pin):
-        raise HTTPException(status_code=401, detail="Invalid PIN.")
+def normalize(doc: Dict[str, Any]) -> Dict[str, Any]:
+    for k, v in doc_defaults().items():
+        if k not in doc or doc[k] is None and v is not None:
+            doc[k] = v
+        elif v is not None and not isinstance(doc[k], type(v)):
+            if isinstance(v, float) and isinstance(doc[k], int):
+                continue
+            doc[k] = v
+    doc["settings"] = {**DEFAULT_SETTINGS, **doc["settings"]}
+    good = []
+    for p in doc["plans"]:
+        if isinstance(p, dict) and p.get("id") and isinstance(p.get("blocks"), list):
+            p["blocks"] = [b for b in p["blocks"] if isinstance(b, dict) and b.get("id")]
+            for b in p["blocks"]:
+                b.setdefault("subject", "")
+                b.setdefault("topic", "")
+                b.setdefault("priority", "P3")
+                b.setdefault("locked", False)
+                b.setdefault("defense", "busy")
+                b.setdefault("done", False)
+                b.setdefault("notes", "")
+                b.setdefault("type", "task")
+            good.append(p)
+    doc["plans"] = good
+    if doc["active_plan_id"] not in [p["id"] for p in good]:
+        doc["active_plan_id"] = good[0]["id"] if good else None
     return doc
 
 
-def call_groq_json(system_prompt: str, user_prompt: str) -> dict:
-    if groq_client is None:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured on Render")
+def save(doc: Dict[str, Any], *fields: str):
+    col().update_one({"_id": doc["_id"]}, {"$set": {f: doc[f] for f in fields}})
+
+
+def auth_user(
+    x_username: Optional[str] = Header(None),
+    x_token: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    if not x_username or not x_token:
+        bad("Not signed in", 401)
+    doc = col().find_one({"_id": uid_of(x_username)})
+    if not doc:
+        bad("Session expired. Please sign in again.", 401)
+    if sha(x_token) not in (doc.get("tokens") or []):
+        bad("Session expired. Please sign in again.", 401)
+    return normalize(doc)
+
+
+def get_plan(doc: Dict[str, Any], pid: str) -> Dict[str, Any]:
+    for p in doc["plans"]:
+        if p["id"] == pid:
+            return p
+    bad("Plan not found", 404)
+
+
+def find_block(plan: Dict[str, Any], bid: str) -> Dict[str, Any]:
+    for b in plan["blocks"]:
+        if b["id"] == bid:
+            return b
+    bad("Block not found", 404)
+
+
+def active_plan(doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    for p in doc["plans"]:
+        if p["id"] == doc["active_plan_id"]:
+            return p
+    return None
+
+
+# --------------------------------------------------------------------------
+# Settings, blocks, buffers
+# --------------------------------------------------------------------------
+def clean_settings(inp: Dict[str, Any], base: Dict[str, Any]) -> Dict[str, Any]:
+    s = dict(base)
+    for k in ("study_start", "study_end"):
+        if k in inp and inp[k] is not None:
+            m = parse_hm(inp[k])
+            s[k] = min_to_hm(max(DAY_MIN_START, min(DAY_MAX_END, m)))
+    if inp.get("buffer_min") is not None:
+        s["buffer_min"] = clamp(inp["buffer_min"], 0, 60, 15)
+    if inp.get("max_daily_hours") is not None:
+        s["max_daily_hours"] = max(1, min(14, float(inp["max_daily_hours"])))
+    if inp.get("weekly_goal_hours") is not None:
+        s["weekly_goal_hours"] = max(1, min(100, float(inp["weekly_goal_hours"])))
+    if inp.get("defense_mode") is not None:
+        if inp["defense_mode"] not in ("proactive", "reactive"):
+            bad("defense_mode must be 'proactive' or 'reactive'")
+        s["defense_mode"] = inp["defense_mode"]
+    if inp.get("default_session") is not None:
+        s["default_session"] = clamp(inp["default_session"], 15, 120, 50)
+    if parse_hm(s["study_end"]) - parse_hm(s["study_start"]) < 60:
+        bad("Study end must be at least 1 hour after study start")
+    return s
+
+
+def default_defense(st: Dict[str, Any], btype: str) -> str:
+    if btype in ("fixed", "focus") or st.get("defense_mode") == "proactive":
+        return "busy"
+    return "free"
+
+
+def make_block(title, btype, date_s, start_min, dur, st, subject="", topic="",
+               priority="P3", locked=None, defense=None, habit_id=None, bid=None):
+    return {
+        "id": bid or uuid.uuid4().hex[:12],
+        "title": str(title)[:120],
+        "type": btype,
+        "subject": str(subject)[:60],
+        "topic": str(topic)[:120],
+        "priority": priority if priority in PRIORITIES else "P3",
+        "date": date_s,
+        "start": min_to_hm(start_min),
+        "duration": int(dur),
+        "locked": (btype == "fixed") if locked is None else bool(locked),
+        "defense": defense or default_defense(st, btype),
+        "done": False,
+        "habit_id": habit_id,
+        "notes": "",
+        "manual": False,
+    }
+
+
+def compute_buffers(blocks: List[Dict[str, Any]], buf: int) -> List[Dict[str, Any]]:
+    if buf <= 0:
+        return []
+    by_day = defaultdict(list)
+    for b in blocks:
+        by_day[b["date"]].append(b)
+    out = []
+    for ds, items in by_day.items():
+        items.sort(key=lambda x: x["start"])
+        for i in range(len(items) - 1):
+            cur, nxt = items[i], items[i + 1]
+            end = parse_hm(cur["start"]) + cur["duration"]
+            gap = parse_hm(nxt["start"]) - end
+            if buf <= gap <= buf * 2:
+                out.append({
+                    "id": "buf_" + cur["id"], "type": "buffer", "title": "Buffer",
+                    "date": ds, "start": min_to_hm(end), "duration": buf,
+                })
+    return out
+
+
+def plan_payload(doc: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
+    blocks = sorted(plan["blocks"], key=lambda b: (b["date"], b["start"]))
+    return {
+        "plan": {k: plan.get(k) for k in ("id", "name", "goal", "created_at")},
+        "blocks": blocks,
+        "buffers": compute_buffers(blocks, int(doc["settings"]["buffer_min"])),
+        "active": doc["active_plan_id"] == plan["id"],
+    }
+
+
+def plan_summary(p: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": p["id"], "name": p.get("name", "Plan"), "goal": p.get("goal", ""),
+        "created_at": p.get("created_at"),
+        "block_count": len(p["blocks"]),
+        "done_count": sum(1 for b in p["blocks"] if b.get("done")),
+    }
+
+
+# --------------------------------------------------------------------------
+# Scheduling engine
+# --------------------------------------------------------------------------
+def conflicts(t: int, dur: int, occ: List[Any], buf: int) -> bool:
+    return any(t < e + buf and t + dur + buf > s for s, e in occ)
+
+
+def find_slot(occ: List[Any], dur: int, earliest: int, latest: int, buf: int) -> Optional[int]:
+    cur = earliest
+    for s, e in sorted(occ):
+        if e + buf <= cur:
+            continue
+        if cur + dur + buf <= s:
+            break
+        cur = max(cur, e + buf)
+    if cur + dur <= latest:
+        return cur
+    return None
+
+
+def schedule(items, kept, base_date, num_days, st, cap_min, now_min=None, wrap=True):
+    """items: dicts with 'duration' and 'pref' (day offset). Returns (placed, unplaced)."""
+    buf = int(st["buffer_min"])
+    ws = max(DAY_MIN_START, parse_hm(st["study_start"]))
+    we = min(DAY_MAX_END, parse_hm(st["study_end"]))
+    occ = defaultdict(list)
+    load = defaultdict(int)
+    for b in kept:
+        s = parse_hm(b["start"])
+        occ[b["date"]].append((s, s + int(b["duration"])))
+        if b.get("type") in ("task", "focus"):
+            load[b["date"]] += int(b["duration"])
+    placed, unplaced = [], []
+    for it in items:
+        dur = int(it["duration"])
+        pref = max(0, min(num_days - 1, int(it.get("pref", 0))))
+        order = list(range(pref, num_days))
+        if wrap:
+            order += list(range(0, pref))
+        ok = False
+        for off in order:
+            ds = (base_date + timedelta(days=off)).isoformat()
+            if load[ds] > 0 and load[ds] + dur > cap_min:
+                continue
+            earliest = ws
+            if off == 0 and now_min is not None:
+                earliest = max(ws, ((int(now_min) + 14) // 15) * 15)
+            t = find_slot(occ[ds], dur, earliest, we, buf)
+            if t is None:
+                continue
+            occ[ds].append((t, t + dur))
+            load[ds] += dur
+            placed.append((it, ds, t))
+            ok = True
+            break
+        if not ok:
+            unplaced.append(it)
+    return placed, unplaced
+
+
+# --------------------------------------------------------------------------
+# Habits
+# --------------------------------------------------------------------------
+class HabitIn(BaseModel):
+    name: str
+    duration: int = 30
+    earliest: str = "07:00"
+    ideal: str = "08:00"
+    latest: str = "10:00"
+    days: List[int] = [0, 1, 2, 3, 4, 5, 6]
+    defense: str = "busy"
+    today: Optional[str] = None
+
+
+def clean_habit(h: HabitIn, hid: Optional[str] = None) -> Dict[str, Any]:
+    name = h.name.strip()
+    if not name:
+        bad("Habit name is required")
+    dur = clamp(h.duration, 5, 240, 30)
+    e, l, i = parse_hm(h.earliest), parse_hm(h.latest), parse_hm(h.ideal)
+    if e < DAY_MIN_START or l > DAY_MAX_END:
+        bad("Habit window must be between 6:00 AM and 11:00 PM")
+    if l - e < dur:
+        bad("Habit window is shorter than its duration")
+    i = max(e, min(i, l - dur))
+    days = sorted({d for d in h.days if isinstance(d, int) and 0 <= d <= 6})
+    if not days:
+        bad("Pick at least one day")
+    if h.defense not in ("busy", "free"):
+        bad("defense must be 'busy' or 'free'")
+    return {
+        "id": hid or uuid.uuid4().hex[:10], "name": name[:60], "duration": dur,
+        "earliest": min_to_hm(e), "ideal": min_to_hm(i), "latest": min_to_hm(l),
+        "days": days, "defense": h.defense,
+    }
+
+
+def place_habit(h: Dict[str, Any], occ: List[Any], buf: int) -> Optional[int]:
+    e, l, ideal = parse_hm(h["earliest"]), parse_hm(h["latest"]), parse_hm(h["ideal"])
+    dur = h["duration"]
+    best = None
+    t = e
+    while t + dur <= l:
+        if not conflicts(t, dur, occ, buf):
+            if best is None or abs(t - ideal) < abs(best - ideal):
+                best = t
+        t += 5
+    return best
+
+
+def sync_plan_habits(doc, plan, today_d: date, horizon: int = HABIT_HORIZON):
+    today_s = today_d.isoformat()
+    habits = doc["habits"]
+    skips = set(doc.get("habit_skips", []))
+    buf = int(doc["settings"]["buffer_min"])
+    days = [today_d + timedelta(days=i) for i in range(horizon)]
+    keep = []
+    for b in plan["blocks"]:
+        if (b["type"] == "habit" and b["date"] >= today_s
+                and not (b.get("done") or b.get("locked") or b.get("manual"))):
+            continue
+        keep.append(b)
+    existing = {b["id"] for b in keep}
+    occ = defaultdict(list)
+    for b in keep:
+        s = parse_hm(b["start"])
+        occ[b["date"]].append((s, s + int(b["duration"])))
+    for h in habits:
+        for d in days:
+            if d.weekday() not in h["days"]:
+                continue
+            ds = d.isoformat()
+            bid = "h_%s_%s" % (h["id"], ds)
+            if bid in existing or bid in skips:
+                continue
+            t = place_habit(h, occ[ds], buf)
+            if t is None:
+                continue
+            blk = make_block(h["name"], "habit", ds, t, h["duration"], doc["settings"],
+                             habit_id=h["id"], defense=h["defense"], bid=bid, priority="P3")
+            keep.append(blk)
+            occ[ds].append((t, t + h["duration"]))
+    plan["blocks"] = keep
+
+
+def sync_habits(doc, today_d: date, horizon: int = HABIT_HORIZON):
+    for p in doc["plans"]:
+        sync_plan_habits(doc, p, today_d, horizon)
+
+
+# --------------------------------------------------------------------------
+# Activity / streak
+# --------------------------------------------------------------------------
+def bump_streak(doc, today_s: str):
+    last = doc.get("last_done_date")
+    if last == today_s:
+        return
+    t = parse_date(today_s)
+    if last:
+        try:
+            if (t - date.fromisoformat(last)).days == 1:
+                doc["streak"] = int(doc.get("streak", 0)) + 1
+            else:
+                doc["streak"] = 1
+        except Exception:  # noqa: BLE001
+            doc["streak"] = 1
+    else:
+        doc["streak"] = 1
+    doc["last_done_date"] = today_s
+
+
+def streak_now(doc, today_s: str) -> int:
+    last = doc.get("last_done_date")
+    if not last:
+        return 0
     try:
-        completion = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.35,
-            response_format={"type": "json_object"},
-        )
-        raw_text = completion.choices[0].message.content or "{}"
-        match = re.search(r"\{.*\}", raw_text, re.S)
-        return json.loads(match.group(0) if match else raw_text)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"AI request failed: {str(e)}")
+        if (today_or_default(today_s) - date.fromisoformat(last)).days <= 1:
+            return int(doc.get("streak", 0))
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
 
 
-def build_student_context(doc: dict, active_plan_id: str) -> str:
-    settings = {**DEFAULT_SETTINGS, **(doc.get("settings") or {})}
-    plans = doc.get("plans", [])
-    plan = next((p for p in plans if p.get("plan_id") == active_plan_id), None) or (plans[0] if plans else None)
-    habits = [h for h in doc.get("habits", []) if h.get("active", True)]
-    streak = doc.get("streak", 0)
-    hours = round(int(doc.get("logged_minutes", 0)) / 60, 1)
+def log_minutes(doc, date_s: str, minutes: int, kind: str):
+    act = doc["activity"]
+    day = act.get(date_s) or {"study": 0, "focus": 0}
+    day[kind] = max(0, int(day.get(kind, 0)) + int(minutes))
+    act[date_s] = day
+    # keep the activity map small
+    if len(act) > 400:
+        for k in sorted(act.keys())[:-400]:
+            act.pop(k, None)
 
-    lines = [
-        f"Student: {doc['user_id']} | Streak: {streak}d | Logged: {hours}h / Weekly Focus Goal: {settings['focus_goal_hours']}h ({settings['defense_mode']} defense)",
-        f"Study Hours: {settings['study_start']} - {settings['study_end']} | Auto-Buffers: {settings['auto_buffers']}",
-    ]
-    if habits:
-        lines.append("Active Habits: " + ", ".join(f"{h['title']} ({h['duration_min']}m around {h['ideal_time']})" for h in habits))
 
-    if not plan:
-        lines.append("Active Plan: None yet.")
-        return "\n".join(lines)
-
-    pending = []
-    done_count = 0
+def week_minutes(doc, today_d: date) -> int:
+    start = today_d - timedelta(days=today_d.weekday())
     total = 0
-    for day in plan.get("days", []):
-        for t in day.get("tasks", []):
-            total += 1
-            if t.get("done"):
-                done_count += 1
-            elif len(pending) < 14:
-                lock_tag = " [LOCKED]" if t.get("locked") else ""
-                pending.append(
-                    f"Day {day.get('day')} @ {t.get('start_time', '09:00')} ({t.get('duration_min', 45)}m, {t.get('priority', 'P2')}{lock_tag}): [{t.get('subject')}] {t.get('topic')}"
-                )
-    lines.append(f"Active Plan: {plan.get('plan_name')} ({done_count}/{total} done) | Weak Topics: {plan.get('weak_topics') or 'None'}")
-    lines.append("Upcoming Scheduled Blocks:\n" + ("\n".join("- " + p for p in pending) if pending else "- All complete!"))
-    return "\n".join(lines)
+    for i in range(7):
+        a = doc["activity"].get((start + timedelta(days=i)).isoformat())
+        if a:
+            total += int(a.get("study", 0)) + int(a.get("focus", 0))
+    return total
 
 
-# -------------------- Request Models --------------------
-class AuthRequest(BaseModel):
-    user_id: str
+# --------------------------------------------------------------------------
+# AI helpers (Groq)
+# --------------------------------------------------------------------------
+def get_groq():
+    key = os.environ.get("GROQ_API_KEY")
+    if not key:
+        bad("AI is not configured (GROQ_API_KEY missing)", 503)
+    from groq import Groq
+    return Groq(api_key=key, timeout=50.0, max_retries=1)
+
+
+def llm(messages, json_mode=False, temperature=0.4, max_tokens=4096) -> str:
+    client = get_groq()
+    last = None
+    for model in MODELS:
+        variants = [
+            {"extra_body": {"reasoning_effort": "low"}, "json": json_mode},
+            {"json": json_mode},
+            {"json": False},
+        ]
+        seen = []
+        for v in variants:
+            key = json.dumps(v, sort_keys=True)
+            if key in seen:
+                continue
+            seen.append(key)
+            kwargs = {
+                "model": model, "messages": messages,
+                "temperature": temperature, "max_tokens": max_tokens,
+            }
+            if v.get("json"):
+                kwargs["response_format"] = {"type": "json_object"}
+            if v.get("extra_body"):
+                kwargs["extra_body"] = v["extra_body"]
+            try:
+                r = client.chat.completions.create(**kwargs)
+                txt = (r.choices[0].message.content or "").strip()
+                if txt:
+                    return txt
+            except Exception as e:  # noqa: BLE001
+                last = e
+    bad("AI is unavailable right now: " + str(last)[:160], 502)
+
+
+def parse_json(txt: str) -> Any:
+    txt = (txt or "").strip()
+    txt = re.sub(r"^```(?:json)?", "", txt, flags=re.M)
+    txt = re.sub(r"```$", "", txt, flags=re.M).strip()
+    try:
+        return json.loads(txt)
+    except Exception:  # noqa: BLE001
+        pass
+    m = re.search(r"\{.*\}", txt, re.S)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
+# --------------------------------------------------------------------------
+# Models (request bodies)
+# --------------------------------------------------------------------------
+class AuthIn(BaseModel):
+    username: str
     pin: str
 
 
-class GeneratePlanRequest(BaseModel):
-    user_id: str
-    pin: str
-    plan_name: str
-    subjects: str
+class SubjectIn(BaseModel):
+    name: str
+    level: str = "medium"   # weak | medium | strong
+
+
+class GenerateIn(BaseModel):
+    name: str = ""
+    subjects: List[SubjectIn]
+    goal: str = ""
+    start_date: str
     days: int = 7
-    hours_per_day: float = 3.5
-    weak_topics: str = ""
-    start_date: str = ""
+    hours_per_day: float = 3
+    session_minutes: int = 50
+    exam_date: Optional[str] = None
+    today: Optional[str] = None
+    now_min: Optional[int] = None
+
+    @field_validator("subjects", mode="before")
+    @classmethod
+    def _subjects(cls, v):
+        out = []
+        for s in v or []:
+            out.append({"name": s} if isinstance(s, str) else s)
+        return out
 
 
-class RebalancePreviewRequest(BaseModel):
-    user_id: str
-    pin: str
-    plan_id: str
-    remaining_days: int = 5
-    hours_per_day: float = 3.5
+class BlankPlanIn(BaseModel):
+    name: str = "My Study Plan"
 
 
-class ApplyPreviewRequest(BaseModel):
-    user_id: str
-    pin: str
-    plan: dict
+class RenameIn(BaseModel):
+    name: str
 
 
-class DeletePlanRequest(BaseModel):
-    user_id: str
-    pin: str
-    plan_id: str
-
-
-class AddTaskRequest(BaseModel):
-    user_id: str
-    pin: str
-    plan_id: str
-    day: int
-    subject: str
-    topic: str
-    start_time: str = "09:00"
-    duration_min: int = 60
-    priority: str = "P2"
-    block_type: str = "task"
-    defense: str = "busy"
-    locked: bool = False
-
-
-class UpdateTaskRequest(BaseModel):
-    user_id: str
-    pin: str
-    plan_id: str
-    task_id: str
-    done: bool | None = None
-    locked: bool | None = None
-    defense: str | None = None
-    priority: str | None = None
-    start_time: str | None = None
-    duration_min: int | None = None
-    block_type: str | None = None
-    delete: bool = False
-
-
-class HabitSaveRequest(BaseModel):
-    user_id: str
-    pin: str
-    id: str = ""
+class BlockIn(BaseModel):
     title: str
-    subject: str = "General"
-    duration_min: int = 45
-    window_start: str = "17:00"
-    window_end: str = "21:00"
-    ideal_time: str = "18:00"
-    defense: str = "busy"
-    active: bool = True
+    type: str = "task"
+    subject: str = ""
+    topic: str = ""
+    priority: str = "P3"
+    date: str
+    start: str
+    duration: int = 50
+    locked: Optional[bool] = None
+    defense: Optional[str] = None
+    repeat_weeks: int = 0
 
 
-class HabitDeleteRequest(BaseModel):
-    user_id: str
-    pin: str
-    habit_id: str
+class BlockPatch(BaseModel):
+    title: Optional[str] = None
+    subject: Optional[str] = None
+    topic: Optional[str] = None
+    priority: Optional[str] = None
+    date: Optional[str] = None
+    start: Optional[str] = None
+    duration: Optional[int] = None
+    locked: Optional[bool] = None
+    defense: Optional[str] = None
 
 
-class SettingsUpdateRequest(BaseModel):
-    user_id: str
-    pin: str
-    study_start: str = "07:00"
-    study_end: str = "22:30"
-    focus_goal_hours: int = 14
-    defense_mode: str = "proactive"
-    auto_buffers: bool = True
-    buffer_minutes: int = 15
+class DoneIn(BaseModel):
+    done: bool = True
+    today: Optional[str] = None
 
 
-class FocusLogRequest(BaseModel):
-    user_id: str
-    pin: str
+class RebalanceIn(BaseModel):
+    today: str
+    now_min: Optional[int] = None
+
+
+class Move(BaseModel):
+    id: str
+    date: str
+    start: str
+
+
+class ApplyIn(BaseModel):
+    moves: List[Move]
+
+
+class SettingsIn(BaseModel):
+    study_start: Optional[str] = None
+    study_end: Optional[str] = None
+    buffer_min: Optional[int] = None
+    max_daily_hours: Optional[float] = None
+    weekly_goal_hours: Optional[float] = None
+    defense_mode: Optional[str] = None
+    default_session: Optional[int] = None
+
+
+class FocusIn(BaseModel):
     minutes: int
+    subject: str = ""
+    today: Optional[str] = None
+    plan_id: Optional[str] = None
+    block_id: Optional[str] = None
 
 
-class TopicRequest(BaseModel):
-    subject: str
+class SyncIn(BaseModel):
+    today: Optional[str] = None
+
+
+class NotesIn(BaseModel):
     topic: str
+    subject: str = ""
+    plan_id: Optional[str] = None
+    block_id: Optional[str] = None
+    refresh: bool = False
 
 
-class ChatSendRequest(BaseModel):
-    user_id: str
-    pin: str
+class QuizIn(BaseModel):
+    topic: str
+    subject: str = ""
+
+
+class QuizResultIn(BaseModel):
+    topic: str
+    subject: str = ""
+    score: int
+    total: int
+
+
+class ChatIn(BaseModel):
     message: str
-    active_plan_id: str = ""
+    today: Optional[str] = None
+    now: Optional[str] = None   # "HH:MM"
 
 
-class ChatClearRequest(BaseModel):
-    user_id: str
-    pin: str
+# --------------------------------------------------------------------------
+# Health
+# --------------------------------------------------------------------------
+@app.get("/")
+def root():
+    return {"app": "LearnPulse OS API", "status": "ok"}
 
 
-# -------------------- Endpoints --------------------
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "LearnPulse OS v3", "model": GROQ_MODEL}
+    return {"status": "ok", "app": "LearnPulse OS", "time": now_iso()}
 
 
+# --------------------------------------------------------------------------
+# Auth
+# --------------------------------------------------------------------------
 @app.post("/api/auth")
-def auth_user(req: AuthRequest):
-    if accounts_col is None:
-        raise HTTPException(status_code=500, detail="MONGO_URI not configured on Render")
-    clean_user = req.user_id.strip().lower()
-    clean_pin = req.pin.strip()
-    if len(clean_user) < 2:
-        raise HTTPException(status_code=400, detail="Username must be at least 2 characters.")
-    if len(clean_pin) < 4:
-        raise HTTPException(status_code=400, detail="PIN must be at least 4 characters.")
+def auth(body: AuthIn):
+    name = re.sub(r"\s+", " ", body.username.strip())
+    if not re.fullmatch(r"[A-Za-z0-9_. \-]{2,24}", name):
+        bad("Username must be 2-24 characters (letters, numbers, space, . _ -)")
+    if not re.fullmatch(r"\d{4}", body.pin):
+        bad("PIN must be exactly 4 digits")
+    uid = uid_of(name)
+    pin_hash = sha("learnpulse:" + uid + ":" + body.pin)
+    token = secrets.token_urlsafe(32)
+    doc = col().find_one({"_id": uid})
+    new_account = False
+    if doc is None:
+        doc = doc_defaults()
+        doc.update({"_id": uid, "username": name, "pin_hash": pin_hash,
+                    "tokens": [sha(token)]})
+        col().insert_one(doc)
+        new_account = True
+    else:
+        doc = normalize(doc)
+        if time.time() < float(doc.get("locked_until", 0) or 0):
+            mins = int((float(doc["locked_until"]) - time.time()) // 60) + 1
+            bad("Too many wrong PINs. Try again in %d min." % mins, 429)
+        stored = doc.get("pin_hash", "")
+        ok = hmac.compare_digest(stored, pin_hash) or hmac.compare_digest(stored, sha(body.pin))
+        if not ok:
+            doc["fails"] = int(doc.get("fails", 0)) + 1
+            if doc["fails"] >= 5:
+                doc["fails"] = 0
+                doc["locked_until"] = time.time() + 300
+            save(doc, "fails", "locked_until")
+            bad("Wrong PIN for this username", 401)
+        doc["pin_hash"] = pin_hash
+        doc["fails"] = 0
+        doc["locked_until"] = 0.0
+        doc["tokens"] = (doc["tokens"] + [sha(token)])[-5:]
+        if not doc.get("username"):
+            doc["username"] = name
+        save(doc, "pin_hash", "fails", "locked_until", "tokens", "username")
+    return {"token": token, "username": doc["username"], "new_account": new_account}
 
-    pin_hash = hash_pin(clean_user, clean_pin)
-    doc = accounts_col.find_one({"user_id": clean_user})
-    if doc:
-        if doc.get("pin_hash") != pin_hash:
-            raise HTTPException(status_code=401, detail="Wrong PIN for this username.")
-        return {"ok": True, "created": False, "account": sanitize_account(doc)}
 
-    new_doc = {
-        "user_id": clean_user,
-        "pin_hash": pin_hash,
-        "streak": 0,
-        "last_active_date": "",
-        "logged_minutes": 0,
-        "settings": dict(DEFAULT_SETTINGS),
-        "habits": [
-            {
-                "id": f"hab-{uuid.uuid4().hex[:6]}",
-                "title": "Daily Active Recall & Notes Review",
-                "subject": "Revision",
-                "duration_min": 30,
-                "window_start": "20:00",
-                "window_end": "22:00",
-                "ideal_time": "20:30",
-                "defense": "free",
-                "active": True,
-            }
-        ],
-        "plans": [],
-        "chat_history": [],
-        "created_at": datetime.now(timezone.utc).isoformat(),
+@app.post("/api/logout")
+def logout(
+    x_username: Optional[str] = Header(None),
+    x_token: Optional[str] = Header(None),
+):
+    if x_username and x_token:
+        col().update_one({"_id": uid_of(x_username)}, {"$pull": {"tokens": sha(x_token)}})
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def me(today: Optional[str] = Query(None), doc=Depends(auth_user)):
+    t = today_or_default(today)
+    return {
+        "username": doc["username"],
+        "streak": streak_now(doc, t.isoformat()),
+        "settings": doc["settings"],
+        "habits": doc["habits"],
+        "active_plan_id": doc["active_plan_id"],
+        "plans": [plan_summary(p) for p in doc["plans"]],
+        "weekly_minutes": week_minutes(doc, t),
     }
-    accounts_col.insert_one(new_doc)
-    return {"ok": True, "created": True, "account": sanitize_account(new_doc)}
+
+
+# --------------------------------------------------------------------------
+# Settings
+# --------------------------------------------------------------------------
+@app.get("/api/settings")
+def get_settings(doc=Depends(auth_user)):
+    return {"settings": doc["settings"]}
+
+
+@app.put("/api/settings")
+def put_settings(body: SettingsIn, doc=Depends(auth_user)):
+    doc["settings"] = clean_settings(body.model_dump(exclude_none=True), doc["settings"])
+    save(doc, "settings")
+    return {"settings": doc["settings"]}
+
+
+# --------------------------------------------------------------------------
+# Plans
+# --------------------------------------------------------------------------
+@app.get("/api/plans")
+def list_plans(doc=Depends(auth_user)):
+    return {"plans": [plan_summary(p) for p in doc["plans"]],
+            "active_plan_id": doc["active_plan_id"]}
+
+
+@app.get("/api/plans/{pid}")
+def read_plan(pid: str, doc=Depends(auth_user)):
+    return plan_payload(doc, get_plan(doc, pid))
+
+
+@app.post("/api/plans/blank")
+def blank_plan(body: BlankPlanIn, doc=Depends(auth_user)):
+    if len(doc["plans"]) >= MAX_PLANS:
+        bad("You have %d plans. Delete an old one first." % MAX_PLANS)
+    plan = {"id": uuid.uuid4().hex[:10], "name": (body.name.strip() or "My Study Plan")[:60],
+            "goal": "", "created_at": now_iso(), "blocks": []}
+    doc["plans"].append(plan)
+    doc["active_plan_id"] = plan["id"]
+    sync_plan_habits(doc, plan, date.today())
+    save(doc, "plans", "active_plan_id")
+    return plan_payload(doc, plan)
+
+
+@app.put("/api/plans/{pid}")
+def rename_plan(pid: str, body: RenameIn, doc=Depends(auth_user)):
+    plan = get_plan(doc, pid)
+    name = body.name.strip()
+    if not name:
+        bad("Name is required")
+    plan["name"] = name[:60]
+    save(doc, "plans")
+    return {"ok": True, "plan": plan_summary(plan)}
+
+
+@app.put("/api/plans/{pid}/activate")
+def activate_plan(pid: str, doc=Depends(auth_user)):
+    plan = get_plan(doc, pid)
+    doc["active_plan_id"] = pid
+    save(doc, "active_plan_id")
+    return plan_payload(doc, plan)
+
+
+@app.delete("/api/plans/{pid}")
+def delete_plan(pid: str, doc=Depends(auth_user)):
+    get_plan(doc, pid)
+    doc["plans"] = [p for p in doc["plans"] if p["id"] != pid]
+    if doc["active_plan_id"] == pid:
+        doc["active_plan_id"] = doc["plans"][0]["id"] if doc["plans"] else None
+    save(doc, "plans", "active_plan_id")
+    return {"ok": True, "active_plan_id": doc["active_plan_id"],
+            "plans": [plan_summary(p) for p in doc["plans"]]}
+
+
+def ai_plan_tasks(body: GenerateIn, subjects, weak) -> List[Dict[str, Any]]:
+    total_min = int(body.days * body.hours_per_day * 60)
+    approx = max(4, min(80, total_min // max(20, body.session_minutes - 10)))
+    sub_txt = "; ".join("%s (%s)" % (s["name"], s["level"]) for s in subjects)
+    weak_txt = ", ".join(w.get("topic", "") for w in weak[:8]) or "none"
+    system = (
+        "You are an expert study-planning engine. Reply with ONE JSON object only, "
+        "no prose, no markdown fences."
+    )
+    user = (
+        "Create study tasks for a student.\n"
+        "Subjects (with strength): " + sub_txt + "\n"
+        "Goal: " + (body.goal or "general mastery") + "\n"
+        "Exam date: " + (body.exam_date or "not set") + "\n"
+        "Plan length: %d days, about %.1f study hours per day.\n" % (body.days, body.hours_per_day) +
+        "Known weak topics to revisit: " + weak_txt + "\n"
+        "Give about %d tasks. Weak subjects get more and earlier tasks. Mix deep "
+        "'focus' sessions (~%d min) with shorter 'task' items (practice problems, "
+        "revision, mock tests, flashcards, 20-45 min).\n" % (approx, body.session_minutes) +
+        'JSON shape: {"plan_name": "short name", "tasks": [{"title": "specific action", '
+        '"subject": "subject name", "topic": "specific topic", "kind": "focus" or "task", '
+        '"duration": minutes multiple of 5 between 20 and 90, "priority": "P1".."P4" '
+        "(P1 most urgent), \"day\": day number 1-%d}]}" % body.days
+    )
+    txt = llm([{"role": "system", "content": system}, {"role": "user", "content": user}],
+              json_mode=True, temperature=0.5)
+    data = parse_json(txt)
+    raw = data.get("tasks") if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        return []
+    tasks = []
+    for i, t in enumerate(raw[:80]):
+        if not isinstance(t, dict):
+            continue
+        title = str(t.get("title") or t.get("topic") or "").strip()
+        if not title:
+            continue
+        kind = "focus" if str(t.get("kind", "task")).lower() == "focus" else "task"
+        pr = str(t.get("priority", "P2")).upper()
+        tasks.append({
+            "title": title[:100],
+            "subject": str(t.get("subject", ""))[:60],
+            "topic": str(t.get("topic", ""))[:120],
+            "type": kind,
+            "duration": clamp(round(float(t.get("duration", 45) or 45) / 5) * 5, 15, 120, 45),
+            "priority": pr if pr in PRIORITIES else "P2",
+            "pref": clamp(t.get("day", 1), 1, body.days, 1) - 1,
+        })
+    name = data.get("plan_name") if isinstance(data, dict) else None
+    if tasks and name:
+        tasks[0]["_plan_name"] = str(name)[:60]
+    return tasks if len(tasks) >= 3 else []
+
+
+def fallback_tasks(body: GenerateIn, subjects) -> List[Dict[str, Any]]:
+    total = int(body.days * body.hours_per_day * 60)
+    order = sorted(subjects, key=lambda s: {"weak": 0, "medium": 1, "strong": 2}.get(s["level"], 1))
+    pr = {"weak": "P1", "medium": "P2", "strong": "P3"}
+    patterns = [
+        ("Deep study", "focus", body.session_minutes),
+        ("Practice problems", "task", 30),
+        ("Quick revision", "task", 25),
+    ]
+    items, minutes, rnd = [], 0, 0
+    while minutes < total and len(items) < 80:
+        for s in order:
+            label, kind, dur = patterns[rnd % len(patterns)]
+            items.append({
+                "title": "%s: %s" % (label, s["name"]), "subject": s["name"], "topic": "",
+                "type": kind, "duration": dur, "priority": pr.get(s["level"], "P2"),
+            })
+            minutes += dur
+            if minutes >= total or len(items) >= 80:
+                break
+        rnd += 1
+    for i, it in enumerate(items):
+        it["pref"] = min(body.days - 1, (i * body.days) // max(1, len(items)))
+    return items
 
 
 @app.post("/api/plans/generate")
-def generate_plan(req: GeneratePlanRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    settings = {**DEFAULT_SETTINGS, **(doc.get("settings") or {})}
-    active_habits = [h for h in doc.get("habits", []) if h.get("active", True)]
-    start_dt = req.start_date.strip() or date.today().isoformat()
-    plan_name = req.plan_name.strip() or "Smart Study Plan"
+def generate_plan(body: GenerateIn, doc=Depends(auth_user)):
+    if len(doc["plans"]) >= MAX_PLANS:
+        bad("You have %d plans. Delete an old one first." % MAX_PLANS)
+    start = parse_date(body.start_date)
+    if body.exam_date:
+        parse_date(body.exam_date)
+    body.days = clamp(body.days, 1, 21, 7)
+    body.hours_per_day = max(0.5, min(10.0, float(body.hours_per_day)))
+    body.session_minutes = clamp(body.session_minutes, 20, 120, 50)
+    subjects = []
+    for s in body.subjects:
+        nm = s.name.strip()
+        if nm:
+            subjects.append({"name": nm[:60],
+                             "level": s.level if s.level in ("weak", "medium", "strong") else "medium"})
+    if not subjects:
+        bad("Add at least one subject")
+    subjects = subjects[:10]
 
-    habits_text = (
-        "\n".join(
-            f"- Habit '{h['title']}' ({h['subject']}, {h['duration_min']} min, window {h['window_start']}-{h['window_end']}, ideal {h['ideal_time']})"
-            for h in active_habits
-        )
-        if active_habits
-        else "None"
-    )
-
-    prompt = f"""Build a Reclaim.ai-style time-blocked {req.days}-day study schedule for a B.Tech engineering student.
-Plan Name: {plan_name}
-Subjects: {req.subjects}
-Target Study Hours/Day: {req.hours_per_day} hours
-Allowed Daily Window: {settings['study_start']} to {settings['study_end']} (24-hour HH:MM)
-Weak Topics (assign P1 priority & Deep Focus blocks early in the day): {req.weak_topics or "None"}
-Recurring Flexible Habits to weave in:
-{habits_text}
-
-Rules:
-1. Give every block a realistic non-overlapping 24-hour "start_time" (e.g. "08:00", "17:30") leaving at least 15 minutes between consecutive blocks.
-2. Mix "block_type" appropriately: "focus" for deep weak-topic mastery, "task" for syllabus topics/problem-solving, and "habit" for included habits.
-3. Assign "priority": "P1" (Critical/Weak), "P2" (High), "P3" (Medium), or "P4" (Low).
-4. Set "defense": "busy" for P1/P2 blocks and "free" for flexible P3/P4 blocks.
-
-Return ONLY valid JSON:
-{{
-  "summary": "2-sentence smart scheduling strategy",
-  "days": [
-    {{
-      "day": 1,
-      "title": "Focused theme for Day 1",
-      "tasks": [
-        {{
-          "subject": "Subject Name",
-          "topic": "Specific concrete study session",
-          "start_time": "08:00",
-          "duration_min": 60,
-          "priority": "P1",
-          "block_type": "focus",
-          "defense": "busy"
-        }}
-      ]
-    }}
-  ]
-}}"""
-
-    plan_json = call_groq_json(
-        "You are LearnPulse OS AI Scheduler (Reclaim-grade time-blocking engine). Output valid JSON only.",
-        prompt,
-    )
-
-    days_list = plan_json.get("days", [])
-    for d_idx, day in enumerate(days_list, start=1):
-        day["day"] = d_idx
-        for t_idx, t in enumerate(day.get("tasks", []), start=1):
-            t["id"] = f"d{d_idx}-t{t_idx}-{uuid.uuid4().hex[:4]}"
-            t["locked"] = False
-            t["done"] = False
-
-    new_plan = normalize_plan_tasks(
-        {
-            "plan_id": uuid.uuid4().hex[:10],
-            "plan_name": plan_name,
-            "subjects": req.subjects,
-            "days_count": req.days,
-            "hours_per_day": req.hours_per_day,
-            "weak_topics": req.weak_topics,
-            "start_date": start_dt,
-            "summary": plan_json.get("summary", "High-priority topics are defended early with automatic focus buffers."),
-            "days": days_list,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        },
-        settings,
-    )
-
-    plans = [new_plan] + doc.get("plans", [])
-    doc["plans"] = plans
-    accounts_col.update_one({"user_id": doc["user_id"]}, {"$set": {"plans": plans}})
-    return {"ok": True, "plan": new_plan, "account": sanitize_account(doc)}
-
-
-@app.post("/api/plans/rebalance-preview")
-def rebalance_preview(req: RebalancePreviewRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    settings = {**DEFAULT_SETTINGS, **(doc.get("settings") or {})}
-    plans = doc.get("plans", [])
-    target = next((p for p in plans if p["plan_id"] == req.plan_id), None)
-    if not target:
-        raise HTTPException(status_code=404, detail="Plan not found.")
-
-    locked_by_day = {}
-    completed_tasks = []
-    flexible_pending = []
-
-    for day in target.get("days", []):
-        d_num = int(day.get("day", 1))
-        for t in day.get("tasks", []):
-            if t.get("done"):
-                completed_tasks.append(t)
-            elif t.get("locked") or t.get("block_type") == "fixed":
-                locked_by_day.setdefault(d_num, []).append(t)
-            else:
-                flexible_pending.append(t)
-
-    if not flexible_pending:
-        raise HTTPException(status_code=400, detail="No unlocked pending tasks left to rebalance!")
-
-    locked_desc = []
-    for d_num, items in sorted(locked_by_day.items()):
-        for it in items:
-            locked_desc.append(f"Day {d_num} LOCKED {it.get('start_time')} ({it.get('duration_min')}m): {it.get('subject')} - {it.get('topic')}")
-
-    pending_desc = [
-        f"- [{t.get('priority', 'P2')} | {t.get('block_type', 'task')} | {t.get('duration_min', 45)}m] {t.get('subject')}: {t.get('topic')}"
-        for t in flexible_pending
-    ]
-
-    prompt = f"""Rebalance these UNLOCKED pending study tasks across {req.remaining_days} days ({req.hours_per_day} hrs/day) inside {settings['study_start']} to {settings['study_end']}.
-CRITICAL: Do NOT schedule anything overlapping these LOCKED immovable blocks:
-{chr(10).join(locked_desc) if locked_desc else "None"}
-
-Unlocked Pending Tasks to Reschedule (schedule P1 before P2/P3/P4):
-{chr(10).join(pending_desc)}
-
-Return ONLY valid JSON:
-{{
-  "summary": "2-sentence recovery & time-defense summary",
-  "days": [
-    {{
-      "day": 1,
-      "title": "Rebalanced Day 1 focus",
-      "tasks": [
-        {{
-          "subject": "Subject",
-          "topic": "Topic",
-          "start_time": "08:30",
-          "duration_min": 60,
-          "priority": "P1",
-          "block_type": "focus",
-          "defense": "busy"
-        }}
-      ]
-    }}
-  ]
-}}"""
-
-    plan_json = call_groq_json(
-        "You are LearnPulse OS Adaptive Rebalancer. Avoid all locked block times. Output valid JSON only.",
-        prompt,
-    )
-
-    rebuilt_days = []
-    if completed_tasks:
-        rebuilt_days.append({"day": 0, "title": "Completed Earlier (Preserved)", "tasks": completed_tasks})
-
-    ai_days = plan_json.get("days", [])
-    for d_idx in range(1, req.remaining_days + 1):
-        ai_day = next((d for d in ai_days if int(d.get("day", 0)) == d_idx), None)
-        day_tasks = []
-        # Re-attach immovable locked blocks for this day
-        for lt in locked_by_day.get(d_idx, []):
-            day_tasks.append(lt)
-        # Attach AI-rebalanced flexible blocks
-        if ai_day:
-            for t_idx, t in enumerate(ai_day.get("tasks", []), start=1):
-                t["id"] = f"rb{d_idx}-t{t_idx}-{uuid.uuid4().hex[:4]}"
-                t["locked"] = False
-                t["done"] = False
-                day_tasks.append(t)
-        day_tasks.sort(key=lambda x: time_to_minutes(x.get("start_time", "09:00")))
-        rebuilt_days.append(
-            {
-                "day": d_idx,
-                "title": (ai_day.get("title") if ai_day else f"Balanced Study Day {d_idx}"),
-                "tasks": day_tasks,
-            }
-        )
-
-    proposed = normalize_plan_tasks(
-        {
-            **target,
-            "days_count": req.remaining_days,
-            "hours_per_day": req.hours_per_day,
-            "start_date": date.today().isoformat(),
-            "summary": plan_json.get("summary", "Schedule rebalanced around locked events."),
-            "days": rebuilt_days,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        },
-        settings,
-    )
-    return {"ok": True, "preview_plan": proposed}
-
-
-@app.post("/api/plans/apply-preview")
-def apply_preview(req: ApplyPreviewRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    settings = {**DEFAULT_SETTINGS, **(doc.get("settings") or {})}
-    incoming = normalize_plan_tasks(req.plan, settings)
-    plans = doc.get("plans", [])
-    replaced = False
-    for idx, p in enumerate(plans):
-        if p.get("plan_id") == incoming.get("plan_id"):
-            plans[idx] = incoming
-            replaced = True
-            break
-    if not replaced:
-        plans.insert(0, incoming)
-
-    doc["plans"] = plans
-    accounts_col.update_one({"user_id": doc["user_id"]}, {"$set": {"plans": plans}})
-    return {"ok": True, "account": sanitize_account(doc)}
-
-
-@app.post("/api/plans/delete")
-def delete_plan(req: DeletePlanRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    plans = [p for p in doc.get("plans", []) if p["plan_id"] != req.plan_id]
-    doc["plans"] = plans
-    accounts_col.update_one({"user_id": doc["user_id"]}, {"$set": {"plans": plans}})
-    return {"ok": True, "account": sanitize_account(doc)}
-
-
-@app.post("/api/tasks/add")
-def add_task(req: AddTaskRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    plans = doc.get("plans", [])
-    target = next((p for p in plans if p["plan_id"] == req.plan_id), None)
-    if not target:
-        raise HTTPException(status_code=404, detail="Plan not found.")
-
-    day_obj = next((d for d in target.get("days", []) if int(d.get("day", -1)) == req.day), None)
-    if not day_obj:
-        day_obj = {"day": req.day, "title": f"Day {req.day} Schedule", "tasks": []}
-        target.setdefault("days", []).append(day_obj)
-
-    dur = max(15, min(300, int(req.duration_min)))
-    new_task = {
-        "id": f"m-d{req.day}-{uuid.uuid4().hex[:6]}",
-        "subject": req.subject.strip() or "Study",
-        "topic": req.topic.strip(),
-        "start_time": minutes_to_time(time_to_minutes(req.start_time)),
-        "duration_min": dur,
-        "duration": f"{dur} min",
-        "priority": req.priority if req.priority in ("P1", "P2", "P3", "P4") else "P2",
-        "block_type": req.block_type if req.block_type in ("task", "focus", "habit", "fixed") else "task",
-        "defense": "busy" if req.locked or req.block_type == "fixed" else req.defense,
-        "locked": bool(req.locked or req.block_type == "fixed"),
-        "done": False,
-    }
-    day_obj.setdefault("tasks", []).append(new_task)
-    day_obj["tasks"].sort(key=lambda x: time_to_minutes(x.get("start_time", "09:00")))
-    target["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-    accounts_col.update_one({"user_id": doc["user_id"]}, {"$set": {"plans": plans}})
-    return {"ok": True, "account": sanitize_account(doc)}
-
-
-@app.post("/api/tasks/update")
-def update_task(req: UpdateTaskRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    plans = doc.get("plans", [])
-    target = next((p for p in plans if p["plan_id"] == req.plan_id), None)
-    if not target:
-        raise HTTPException(status_code=404, detail="Plan not found.")
-
-    found_day = None
-    found_task = None
-    for d in target.get("days", []):
-        for t in d.get("tasks", []):
-            if t.get("id") == req.task_id:
-                found_day = d
-                found_task = t
-                break
-
-    if not found_task:
-        raise HTTPException(status_code=404, detail="Block not found.")
-
-    if req.delete:
-        found_day["tasks"] = [t for t in found_day["tasks"] if t.get("id") != req.task_id]
-    else:
-        prev_done = bool(found_task.get("done", False))
-        if req.done is not None:
-            found_task["done"] = req.done
-            mins = int(found_task.get("duration_min") or parse_minutes(found_task.get("duration", "45 min")))
-            logged = int(doc.get("logged_minutes", 0))
-            if req.done and not prev_done:
-                logged += mins
-                streak, last_active = update_streak(doc)
-                doc["streak"] = streak
-                doc["last_active_date"] = last_active
-            elif not req.done and prev_done:
-                logged = max(0, logged - mins)
-            doc["logged_minutes"] = logged
-
-        if req.locked is not None:
-            found_task["locked"] = req.locked
-            if req.locked:
-                found_task["defense"] = "busy"
-        if req.defense in ("busy", "free"):
-            found_task["defense"] = req.defense
-        if req.priority in ("P1", "P2", "P3", "P4"):
-            found_task["priority"] = req.priority
-        if req.block_type in ("task", "focus", "habit", "fixed"):
-            found_task["block_type"] = req.block_type
-        if req.start_time:
-            found_task["start_time"] = minutes_to_time(time_to_minutes(req.start_time))
-        if req.duration_min:
-            dur = max(15, min(300, int(req.duration_min)))
-            found_task["duration_min"] = dur
-            found_task["duration"] = f"{dur} min"
-        found_day["tasks"].sort(key=lambda x: time_to_minutes(x.get("start_time", "09:00")))
-
-    target["updated_at"] = datetime.now(timezone.utc).isoformat()
-    accounts_col.update_one(
-        {"user_id": doc["user_id"]},
-        {
-            "$set": {
-                "plans": plans,
-                "logged_minutes": doc.get("logged_minutes", 0),
-                "streak": doc.get("streak", 0),
-                "last_active_date": doc.get("last_active_date", ""),
-            }
-        },
-    )
-    return {"ok": True, "account": sanitize_account(doc)}
-
-
-@app.post("/api/habits/save")
-def save_habit(req: HabitSaveRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    habits = doc.get("habits", [])
-    hid = req.id.strip() or f"hab-{uuid.uuid4().hex[:6]}"
-    entry = {
-        "id": hid,
-        "title": req.title.strip(),
-        "subject": req.subject.strip() or "General",
-        "duration_min": max(15, min(180, int(req.duration_min))),
-        "window_start": minutes_to_time(time_to_minutes(req.window_start, 1020)),
-        "window_end": minutes_to_time(time_to_minutes(req.window_end, 1260)),
-        "ideal_time": minutes_to_time(time_to_minutes(req.ideal_time, 1080)),
-        "defense": req.defense if req.defense in ("busy", "free") else "busy",
-        "active": bool(req.active),
-    }
-
-    updated = False
-    for i, h in enumerate(habits):
-        if h.get("id") == hid:
-            habits[i] = entry
-            updated = True
-            break
-    if not updated:
-        habits.append(entry)
-
-    doc["habits"] = habits
-    accounts_col.update_one({"user_id": doc["user_id"]}, {"$set": {"habits": habits}})
-    return {"ok": True, "account": sanitize_account(doc)}
-
-
-@app.post("/api/habits/delete")
-def delete_habit(req: HabitDeleteRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    habits = [h for h in doc.get("habits", []) if h.get("id") != req.habit_id]
-    doc["habits"] = habits
-    accounts_col.update_one({"user_id": doc["user_id"]}, {"$set": {"habits": habits}})
-    return {"ok": True, "account": sanitize_account(doc)}
-
-
-@app.post("/api/settings/update")
-def update_settings(req: SettingsUpdateRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    new_settings = {
-        "study_start": minutes_to_time(time_to_minutes(req.study_start, 420)),
-        "study_end": minutes_to_time(time_to_minutes(req.study_end, 1350)),
-        "focus_goal_hours": max(1, min(60, int(req.focus_goal_hours))),
-        "defense_mode": req.defense_mode if req.defense_mode in ("proactive", "reactive") else "proactive",
-        "auto_buffers": bool(req.auto_buffers),
-        "buffer_minutes": max(5, min(30, int(req.buffer_minutes))),
-    }
-    doc["settings"] = new_settings
-    accounts_col.update_one({"user_id": doc["user_id"]}, {"$set": {"settings": new_settings}})
-    return {"ok": True, "account": sanitize_account(doc)}
-
-
-@app.post("/api/focus/log")
-def log_focus(req: FocusLogRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    add_mins = max(1, min(req.minutes, 240))
-    doc["logged_minutes"] = int(doc.get("logged_minutes", 0)) + add_mins
-    streak, last_active = update_streak(doc)
-    doc["streak"] = streak
-    doc["last_active_date"] = last_active
-    accounts_col.update_one(
-        {"user_id": doc["user_id"]},
-        {"$set": {"logged_minutes": doc["logged_minutes"], "streak": streak, "last_active_date": last_active}},
-    )
-    return {"ok": True, "account": sanitize_account(doc)}
-
-
-@app.post("/api/ai/topic-help")
-def topic_help(req: TopicRequest):
-    prompt = f"""Explain this B.Tech engineering topic clearly for quick exam revision.
-Subject: {req.subject}
-Topic: {req.topic}
-
-Return ONLY valid JSON:
-{{
-  "overview": "Clear 2-3 sentence intuitive explanation",
-  "key_points": ["Key point 1", "Key point 2", "Key point 3", "Key point 4"],
-  "formulas_or_code": ["Important formula, law, or short code syntax 1", "Important formula or syntax 2"],
-  "exam_tip": "One high-scoring exam tip or common mistake to avoid"
-}}"""
-    data = call_groq_json(
-        "You are an engineering professor helping a B.Tech student revise quickly. Output valid JSON only.",
-        prompt,
-    )
-    return {"ok": True, "data": data}
-
-
-@app.post("/api/ai/topic-quiz")
-def topic_quiz(req: TopicRequest):
-    prompt = f"""Create 3 conceptual multiple-choice practice questions for an engineering student.
-Subject: {req.subject}
-Topic: {req.topic}
-
-Return ONLY valid JSON:
-{{
-  "questions": [
-    {{
-      "question": "Clear question text",
-      "options": ["Option A", "Option B", "Option C", "Option D"],
-      "answer_index": 0,
-      "explanation": "1-sentence explanation of why this option is correct"
-    }}
-  ]
-}}"""
-    data = call_groq_json("You are an engineering exam quiz generator. Output valid JSON only.", prompt)
-    return {"ok": True, "questions": data.get("questions", [])}
-
-
-@app.post("/api/chat/send")
-def chat_send(req: ChatSendRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    if groq_client is None:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured on Render")
-    user_msg = req.message.strip()
-    if not user_msg:
-        raise HTTPException(status_code=400, detail="Message cannot be empty.")
-
-    student_ctx = build_student_context(doc, req.active_plan_id)
-    history = doc.get("chat_history", [])
-    system_prompt = (
-        "You are PulseBot, the exclusive AI Scheduling & Study Mentor inside LearnPulse OS "
-        "(developed by Viswesh & Team, Dept of CSE). "
-        "You understand time-blocking, P1-P4 priorities, locked blocks, focus time defense, and B.Tech subjects. "
-        "Give sharp, actionable, well-structured answers.\n\n"
-        f"LIVE STUDENT CONTEXT:\n{student_ctx}"
-    )
-
-    messages = [{"role": "system", "content": system_prompt}]
-    for item in history[-10:]:
-        if item.get("role") in ("user", "assistant") and item.get("content"):
-            messages.append({"role": item["role"], "content": item["content"]})
-    messages.append({"role": "user", "content": user_msg})
-
+    tasks, warning, ai_used = [], None, False
     try:
-        completion = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages, temperature=0.5)
-        reply_text = (completion.choices[0].message.content or "").strip()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"PulseBot error: {str(e)}")
+        tasks = ai_plan_tasks(body, subjects, doc["weak_topics"])
+        ai_used = bool(tasks)
+        if not tasks:
+            warning = "AI returned an unusable plan, so a standard plan was created instead."
+    except HTTPException as e:
+        warning = "AI unavailable (" + str(e.detail)[:100] + "); a standard plan was created."
+    except Exception as e:  # noqa: BLE001
+        warning = "AI error (" + type(e).__name__ + "); a standard plan was created."
+    if not tasks:
+        tasks = fallback_tasks(body, subjects)
 
-    now_iso = datetime.now(timezone.utc).isoformat()
-    history.append({"role": "user", "content": user_msg, "ts": now_iso})
-    history.append({"role": "assistant", "content": reply_text, "ts": now_iso})
-    trimmed = history[-30:]
-    accounts_col.update_one({"user_id": doc["user_id"]}, {"$set": {"chat_history": trimmed}})
-    return {"ok": True, "reply": reply_text, "chat_history": trimmed}
+    plan_name = body.name.strip() or ""
+    for t in tasks:
+        if t.get("_plan_name") and not plan_name:
+            plan_name = t["_plan_name"]
+        t.pop("_plan_name", None)
+    plan = {
+        "id": uuid.uuid4().hex[:10],
+        "name": (plan_name or "Plan from " + start.isoformat())[:60],
+        "goal": body.goal.strip()[:200], "created_at": now_iso(), "blocks": [],
+    }
+    doc["plans"].append(plan)
+    doc["active_plan_id"] = plan["id"]
+    sync_plan_habits(doc, plan, start, max(HABIT_HORIZON, body.days + 1))
+
+    st = doc["settings"]
+    now_min = body.now_min if (body.today and body.today == body.start_date) else None
+    placed, unplaced = schedule(tasks, plan["blocks"], start, body.days, st,
+                                int(body.hours_per_day * 60), now_min=now_min, wrap=True)
+    for it, ds, t in placed:
+        plan["blocks"].append(make_block(it["title"], it["type"], ds, t, it["duration"], st,
+                                         subject=it["subject"], topic=it["topic"],
+                                         priority=it["priority"]))
+    save(doc, "plans", "active_plan_id")
+    out = plan_payload(doc, plan)
+    out.update({"ai_used": ai_used, "warning": warning, "unplaced": len(unplaced)})
+    return out
 
 
-@app.post("/api/chat/clear")
-def chat_clear(req: ChatClearRequest):
-    doc = require_verified_user(req.user_id, req.pin)
-    accounts_col.update_one({"user_id": doc["user_id"]}, {"$set": {"chat_history": []}})
-    return {"ok": True, "chat_history": []}
+# --------------------------------------------------------------------------
+# Blocks
+# --------------------------------------------------------------------------
+def check_fit(start_min: int, dur: int):
+    if start_min < DAY_MIN_START:
+        bad("Blocks cannot start before 6:00 AM")
+    if start_min + dur > DAY_MAX_END:
+        bad("Blocks must end by 11:00 PM")
+
+
+@app.post("/api/plans/{pid}/blocks")
+def add_block(pid: str, body: BlockIn, doc=Depends(auth_user)):
+    plan = get_plan(doc, pid)
+    title = body.title.strip()
+    if not title:
+        bad("Title is required")
+    if body.type not in BLOCK_TYPES:
+        bad("Invalid block type")
+    if body.priority not in PRIORITIES:
+        bad("Priority must be P1-P4")
+    if body.defense is not None and body.defense not in ("busy", "free"):
+        bad("defense must be 'busy' or 'free'")
+    d0 = parse_date(body.date)
+    s = parse_hm(body.start)
+    dur = clamp(body.duration, 5, 480, 50)
+    check_fit(s, dur)
+    reps = clamp(body.repeat_weeks, 0, 15, 0)
+    added = []
+    for i in range(reps + 1):
+        ds = (d0 + timedelta(days=7 * i)).isoformat()
+        blk = make_block(title, body.type, ds, s, dur, doc["settings"], subject=body.subject,
+                         topic=body.topic, priority=body.priority, locked=body.locked,
+                         defense=body.defense)
+        plan["blocks"].append(blk)
+        added.append(blk["id"])
+    save(doc, "plans")
+    out = plan_payload(doc, plan)
+    out["added"] = added
+    return out
+
+
+@app.put("/api/plans/{pid}/blocks/{bid}")
+def update_block(pid: str, bid: str, body: BlockPatch, doc=Depends(auth_user)):
+    plan = get_plan(doc, pid)
+    b = find_block(plan, bid)
+    p = body.model_dump(exclude_none=True)
+    if "title" in p:
+        t = p["title"].strip()
+        if not t:
+            bad("Title cannot be empty")
+        b["title"] = t[:120]
+    if "subject" in p:
+        b["subject"] = p["subject"].strip()[:60]
+    if "topic" in p:
+        b["topic"] = p["topic"].strip()[:120]
+    if "priority" in p:
+        if p["priority"] not in PRIORITIES:
+            bad("Priority must be P1-P4")
+        b["priority"] = p["priority"]
+    if "defense" in p:
+        if p["defense"] not in ("busy", "free"):
+            bad("defense must be 'busy' or 'free'")
+        b["defense"] = p["defense"]
+    if "locked" in p:
+        b["locked"] = bool(p["locked"])
+    timing = False
+    if "date" in p:
+        b["date"] = parse_date(p["date"]).isoformat()
+        timing = True
+    if "start" in p:
+        b["start"] = min_to_hm(parse_hm(p["start"]))
+        timing = True
+    if "duration" in p:
+        b["duration"] = clamp(p["duration"], 5, 480, b["duration"])
+        timing = True
+    if timing:
+        check_fit(parse_hm(b["start"]), int(b["duration"]))
+        if b["type"] == "habit":
+            b["manual"] = True
+    save(doc, "plans")
+    return plan_payload(doc, plan)
+
+
+@app.delete("/api/plans/{pid}/blocks/{bid}")
+def delete_block(pid: str, bid: str, doc=Depends(auth_user)):
+    plan = get_plan(doc, pid)
+    b = find_block(plan, bid)
+    if b["type"] == "habit":
+        skips = doc["habit_skips"]
+        if bid not in skips:
+            skips.append(bid)
+        doc["habit_skips"] = skips[-400:]
+    plan["blocks"] = [x for x in plan["blocks"] if x["id"] != bid]
+    save(doc, "plans", "habit_skips")
+    return plan_payload(doc, plan)
+
+
+@app.post("/api/plans/{pid}/blocks/{bid}/done")
+def mark_done(pid: str, bid: str, body: DoneIn, doc=Depends(auth_user)):
+    plan = get_plan(doc, pid)
+    b = find_block(plan, bid)
+    today_s = today_or_default(body.today).isoformat()
+    dur = int(b["duration"])
+    if body.done and not b.get("done"):
+        b["done"] = True
+        b["done_date"] = today_s
+        log_minutes(doc, today_s, dur, "study")
+        bump_streak(doc, today_s)
+    elif not body.done and b.get("done"):
+        b["done"] = False
+        log_minutes(doc, b.get("done_date") or today_s, -dur, "study")
+        b.pop("done_date", None)
+    save(doc, "plans", "activity", "streak", "last_done_date")
+    out = plan_payload(doc, plan)
+    out["streak"] = streak_now(doc, today_s)
+    out["weekly_minutes"] = week_minutes(doc, today_or_default(today_s))
+    return out
+
+
+# --------------------------------------------------------------------------
+# Rebalance (preview + apply)
+# --------------------------------------------------------------------------
+def is_movable(b: Dict[str, Any]) -> bool:
+    return b["type"] in ("task", "focus") and not b.get("locked") and not b.get("done")
+
+
+@app.post("/api/plans/{pid}/rebalance/preview")
+def rebalance_preview(pid: str, body: RebalanceIn, doc=Depends(auth_user)):
+    plan = get_plan(doc, pid)
+    st = doc["settings"]
+    today = parse_date(body.today)
+    blocks = plan["blocks"]
+    movable = [b for b in blocks if is_movable(b)]
+    mids = {b["id"] for b in movable}
+    kept = [b for b in blocks if b["id"] not in mids]
+    last = max([parse_date(b["date"]) for b in blocks] + [today])
+    num_days = min(60, max(14, (last - today).days + 8))
+    items = []
+    for b in movable:
+        pref = max(0, (parse_date(b["date"]) - today).days)
+        items.append({"id": b["id"], "duration": int(b["duration"]), "pref": pref,
+                      "key": (pref, prio_rank(b["priority"]), b["date"], b["start"])})
+    items.sort(key=lambda i: i["key"])
+    placed, unplaced = schedule(items, kept, today, num_days, st,
+                                int(float(st["max_daily_hours"]) * 60),
+                                now_min=body.now_min, wrap=False)
+    pos = {it["id"]: (ds, t) for it, ds, t in placed}
+    out_blocks, changed = [], []
+    for b in blocks:
+        nb = dict(b)
+        if b["id"] in pos:
+            ds, t = pos[b["id"]]
+            nb["date"], nb["start"] = ds, min_to_hm(t)
+            if ds != b["date"] or nb["start"] != b["start"]:
+                changed.append(b["id"])
+        out_blocks.append(nb)
+    out_blocks.sort(key=lambda b: (b["date"], b["start"]))
+    return {
+        "blocks": out_blocks,
+        "buffers": compute_buffers(out_blocks, int(st["buffer_min"])),
+        "moves": [{"id": i, "date": pos[i][0], "start": min_to_hm(pos[i][1])} for i in changed],
+        "changed": changed,
+        "unplaced": [u["id"] for u in unplaced],
+    }
+
+
+@app.post("/api/plans/{pid}/rebalance/apply")
+def rebalance_apply(pid: str, body: ApplyIn, doc=Depends(auth_user)):
+    plan = get_plan(doc, pid)
+    by_id = {b["id"]: b for b in plan["blocks"]}
+    applied = 0
+    for m in body.moves:
+        b = by_id.get(m.id)
+        if not b or not is_movable(b):
+            continue
+        ds = parse_date(m.date).isoformat()
+        s = parse_hm(m.start)
+        check_fit(s, int(b["duration"]))
+        b["date"], b["start"] = ds, min_to_hm(s)
+        applied += 1
+    save(doc, "plans")
+    out = plan_payload(doc, plan)
+    out["applied"] = applied
+    return out
+
+
+# --------------------------------------------------------------------------
+# Habits
+# --------------------------------------------------------------------------
+@app.get("/api/habits")
+def list_habits(doc=Depends(auth_user)):
+    return {"habits": doc["habits"]}
+
+
+@app.post("/api/habits")
+def create_habit(body: HabitIn, doc=Depends(auth_user)):
+    if len(doc["habits"]) >= 15:
+        bad("Maximum 15 habits")
+    doc["habits"].append(clean_habit(body))
+    sync_habits(doc, today_or_default(body.today))
+    save(doc, "habits", "plans")
+    return {"habits": doc["habits"]}
+
+
+@app.put("/api/habits/{hid}")
+def update_habit(hid: str, body: HabitIn, doc=Depends(auth_user)):
+    for i, h in enumerate(doc["habits"]):
+        if h["id"] == hid:
+            doc["habits"][i] = clean_habit(body, hid)
+            sync_habits(doc, today_or_default(body.today))
+            save(doc, "habits", "plans")
+            return {"habits": doc["habits"]}
+    bad("Habit not found", 404)
+
+
+@app.delete("/api/habits/{hid}")
+def delete_habit(hid: str, today: Optional[str] = Query(None), doc=Depends(auth_user)):
+    if hid not in [h["id"] for h in doc["habits"]]:
+        bad("Habit not found", 404)
+    doc["habits"] = [h for h in doc["habits"] if h["id"] != hid]
+    sync_habits(doc, today_or_default(today))
+    save(doc, "habits", "plans")
+    return {"habits": doc["habits"]}
+
+
+@app.post("/api/habits/sync")
+def habits_sync(body: SyncIn, doc=Depends(auth_user)):
+    sync_habits(doc, today_or_default(body.today))
+    save(doc, "plans")
+    plan = active_plan(doc)
+    return plan_payload(doc, plan) if plan else {"plan": None, "blocks": [], "buffers": []}
+
+
+# --------------------------------------------------------------------------
+# Focus sessions
+# --------------------------------------------------------------------------
+@app.post("/api/focus")
+def log_focus(body: FocusIn, doc=Depends(auth_user)):
+    mins = clamp(body.minutes, 1, 240, 0)
+    if mins < 1:
+        bad("Minutes must be between 1 and 240")
+    t = today_or_default(body.today)
+    today_s = t.isoformat()
+    log_minutes(doc, today_s, mins, "focus")
+    bump_streak(doc, today_s)
+    sessions = doc["focus_sessions"]
+    sessions.append({"date": today_s, "minutes": mins, "subject": body.subject[:60],
+                     "at": now_iso()})
+    doc["focus_sessions"] = sessions[-200:]
+    save(doc, "activity", "streak", "last_done_date", "focus_sessions")
+    return {"logged": mins, "streak": streak_now(doc, today_s),
+            "weekly_minutes": week_minutes(doc, t)}
+
+
+# --------------------------------------------------------------------------
+# Analytics
+# --------------------------------------------------------------------------
+@app.get("/api/analytics")
+def analytics(today: Optional[str] = Query(None), doc=Depends(auth_user)):
+    t = today_or_default(today)
+    today_s = t.isoformat()
+    st = doc["settings"]
+    plan = active_plan(doc)
+    blocks = plan["blocks"] if plan else []
+    wk_start = t - timedelta(days=t.weekday())
+    wk_days = {(wk_start + timedelta(days=i)).isoformat() for i in range(7)}
+    defended = sum(int(b["duration"]) for b in blocks
+                   if b["date"] in wk_days and b.get("defense") == "busy")
+    cat = {"Focus": 0, "Tasks": 0, "Habits": 0, "Classes": 0}
+    key = {"focus": "Focus", "task": "Tasks", "habit": "Habits", "fixed": "Classes"}
+    subj = defaultdict(lambda: [0, 0])
+    for b in blocks:
+        cat[key.get(b["type"], "Tasks")] += int(b["duration"])
+        if b["type"] in ("task", "focus"):
+            s = b.get("subject") or "General"
+            subj[s][0] += 1
+            if b.get("done"):
+                subj[s][1] += 1
+    buffers = compute_buffers(blocks, int(st["buffer_min"]))
+    cat["Buffers"] = sum(x["duration"] for x in buffers)
+    labels = list(cat.keys())
+    subjects = [{"subject": k, "total": v[0], "done": v[1],
+                 "pct": round(100.0 * v[1] / v[0]) if v[0] else 0}
+                for k, v in sorted(subj.items(), key=lambda kv: -kv[1][0])[:8]]
+    goal_min = int(float(st["weekly_goal_hours"]) * 60)
+    logged = week_minutes(doc, t)
+    return {
+        "streak": streak_now(doc, today_s),
+        "weekly_goal_hours": st["weekly_goal_hours"],
+        "weekly_logged_minutes": logged,
+        "weekly_progress_pct": min(100, round(100.0 * logged / goal_min)) if goal_min else 0,
+        "defended_minutes": defended,
+        "defended_hours": round(defended / 60.0, 1),
+        "allocation": {"labels": labels, "hours": [round(cat[l] / 60.0, 1) for l in labels]},
+        "subjects": subjects,
+        "tasks_done": sum(1 for b in blocks if b["type"] in ("task", "focus") and b.get("done")),
+        "tasks_total": sum(1 for b in blocks if b["type"] in ("task", "focus")),
+    }
+
+
+# --------------------------------------------------------------------------
+# AI: notes, quiz, weak topics
+# --------------------------------------------------------------------------
+@app.post("/api/ai/notes")
+def ai_notes(body: NotesIn, doc=Depends(auth_user)):
+    topic = body.topic.strip()
+    if not topic:
+        bad("Topic is required")
+    block = None
+    plan = None
+    if body.plan_id and body.block_id:
+        plan = get_plan(doc, body.plan_id)
+        block = find_block(plan, body.block_id)
+        if block.get("notes") and not body.refresh:
+            return {"notes": block["notes"], "cached": True}
+    system = ("You are a concise, accurate study tutor. Write clear Markdown study notes: "
+              "a short overview, key concepts as bullets, one worked example, common mistakes, "
+              "and a 3-line quick recap. Use fenced code blocks for code. Keep under 450 words.")
+    user = "Subject: %s\nTopic: %s\nWrite revision notes for a student." % (
+        body.subject.strip() or "General", topic)
+    txt = llm([{"role": "system", "content": system}, {"role": "user", "content": user}],
+              temperature=0.4, max_tokens=4096)
+    if block is not None and plan is not None:
+        block["notes"] = txt[:6000]
+        save(doc, "plans")
+    return {"notes": txt, "cached": False}
+
+
+@app.post("/api/ai/quiz")
+def ai_quiz(body: QuizIn, doc=Depends(auth_user)):
+    topic = body.topic.strip()
+    if not topic:
+        bad("Topic is required")
+    system = "You write quiz questions. Reply with ONE JSON object only, no prose."
+    user = (
+        "Subject: %s\nTopic: %s\nWrite exactly 3 multiple-choice questions of increasing "
+        "difficulty. Each has exactly 4 options and one correct answer.\n"
+        'JSON shape: {"questions": [{"q": "...", "options": ["A","B","C","D"], '
+        '"answer": 0, "explanation": "one or two sentences"}]} where answer is the '
+        "0-based index of the correct option." % (body.subject.strip() or "General", topic)
+    )
+    txt = llm([{"role": "system", "content": system}, {"role": "user", "content": user}],
+              json_mode=True, temperature=0.5)
+    data = parse_json(txt)
+    raw = data.get("questions") if isinstance(data, dict) else data
+    qs = []
+    if isinstance(raw, list):
+        for q in raw:
+            if not isinstance(q, dict):
+                continue
+            opts = q.get("options")
+            if not isinstance(opts, list) or len(opts) != 4:
+                continue
+            ans = q.get("answer")
+            if isinstance(ans, str):
+                a = ans.strip().upper()[:1]
+                ans = "ABCD".find(a) if a in "ABCD" and a else -1
+            if not isinstance(ans, int) or not 0 <= ans <= 3:
+                continue
+            qs.append({"q": str(q.get("q", "")).strip()[:400],
+                       "options": [str(o)[:200] for o in opts],
+                       "answer": ans,
+                       "explanation": str(q.get("explanation", ""))[:400]})
+    qs = [q for q in qs if q["q"]][:3]
+    if len(qs) < 3:
+        bad("AI could not build a full quiz. Please try again.", 502)
+    return {"topic": topic, "questions": qs}
+
+
+@app.post("/api/quiz/result")
+def quiz_result(body: QuizResultIn, doc=Depends(auth_user)):
+    topic = body.topic.strip()[:120]
+    if not topic:
+        bad("Topic is required")
+    total = clamp(body.total, 1, 20, 3)
+    score = clamp(body.score, 0, total, 0)
+    weak = [w for w in doc["weak_topics"] if w.get("topic", "").lower() != topic.lower()]
+    if score < total:
+        weak.append({"topic": topic, "subject": body.subject.strip()[:60],
+                     "last_score": "%d/%d" % (score, total), "updated": now_iso()})
+    doc["weak_topics"] = weak[-30:]
+    save(doc, "weak_topics")
+    return {"weak_topics": doc["weak_topics"]}
+
+
+@app.get("/api/weak-topics")
+def weak_topics(doc=Depends(auth_user)):
+    return {"weak_topics": doc["weak_topics"]}
+
+
+# --------------------------------------------------------------------------
+# PulseBot
+# --------------------------------------------------------------------------
+def build_context(doc, today_s: str, now_hm: Optional[str]) -> str:
+    t = today_or_default(today_s)
+    st = doc["settings"]
+    plan = active_plan(doc)
+    lines = [
+        "Student: %s" % doc["username"],
+        "Today: %s%s" % (t.isoformat(), (" " + now_hm) if now_hm else ""),
+        "Streak: %d days" % streak_now(doc, t.isoformat()),
+        "Weekly focus goal: %.1f h, logged so far: %.1f h" % (
+            float(st["weekly_goal_hours"]), week_minutes(doc, t) / 60.0),
+        "Study window: %s-%s, buffer %d min, defense mode: %s" % (
+            st["study_start"], st["study_end"], st["buffer_min"], st["defense_mode"]),
+    ]
+    if plan:
+        lines.append("Active plan: " + plan.get("name", "Plan"))
+        today_blocks = sorted([b for b in plan["blocks"] if b["date"] == t.isoformat()],
+                              key=lambda b: b["start"])
+        if today_blocks:
+            lines.append("Today's schedule:")
+            for b in today_blocks[:15]:
+                end = min_to_hm(parse_hm(b["start"]) + int(b["duration"]))
+                flags = [b["type"], b["priority"]]
+                if b.get("locked"):
+                    flags.append("locked")
+                if b.get("done"):
+                    flags.append("done")
+                lines.append("- %s-%s %s [%s]" % (b["start"], end, b["title"], ", ".join(flags)))
+        else:
+            lines.append("Nothing scheduled today.")
+        week_end = (t + timedelta(days=7)).isoformat()
+        pending = [b for b in plan["blocks"]
+                   if b["type"] in ("task", "focus") and not b.get("done")
+                   and t.isoformat() <= b["date"] <= week_end]
+        lines.append("Pending study blocks in next 7 days: %d" % len(pending))
+        locked = sorted([b for b in plan["blocks"]
+                         if b.get("locked") and b["date"] >= t.isoformat()],
+                        key=lambda b: (b["date"], b["start"]))[:8]
+        if locked:
+            lines.append("Upcoming locked blocks: " + "; ".join(
+                "%s %s %s" % (b["date"], b["start"], b["title"]) for b in locked))
+    else:
+        lines.append("No study plan yet.")
+    if doc["weak_topics"]:
+        lines.append("Weak topics: " + ", ".join(
+            "%s (%s)" % (w["topic"], w.get("last_score", "")) for w in doc["weak_topics"][-8:]))
+    if doc["habits"]:
+        lines.append("Habits: " + ", ".join(h["name"] for h in doc["habits"]))
+    return "\n".join(lines)
+
+
+@app.get("/api/chat")
+def chat_history(doc=Depends(auth_user)):
+    return {"messages": doc["chat"][-60:]}
+
+
+@app.delete("/api/chat")
+def chat_clear(doc=Depends(auth_user)):
+    doc["chat"] = []
+    save(doc, "chat")
+    return {"ok": True, "messages": []}
+
+
+@app.post("/api/chat")
+def chat(body: ChatIn, doc=Depends(auth_user)):
+    msg = body.message.strip()
+    if not msg:
+        bad("Message is empty")
+    msg = msg[:2000]
+    t = today_or_default(body.today).isoformat()
+    system = (
+        "You are PulseBot, the exclusive AI study coach inside LearnPulse OS, built by "
+        "Viswesh & Team, Dept of CSE. Be warm, concise and practical. Format with Markdown "
+        "(short lists, **bold**, fenced code blocks for code). Ground your advice in the "
+        "student context below. You cannot edit the calendar yourself; when a schedule change "
+        "is needed, tell the student to tap the block (inspector) or use AI Rebalance. "
+        "If you do not know something, say so.\n\n--- STUDENT CONTEXT ---\n"
+        + build_context(doc, t, body.now)
+    )
+    history = [{"role": m["role"], "content": m["content"]}
+               for m in doc["chat"][-12:] if m.get("role") in ("user", "assistant")]
+    reply = llm([{"role": "system", "content": system}] + history +
+                [{"role": "user", "content": msg}], temperature=0.6, max_tokens=4096)
+    stamp = now_iso()
+    doc["chat"].append({"role": "user", "content": msg, "ts": stamp})
+    doc["chat"].append({"role": "assistant", "content": reply, "ts": now_iso()})
+    doc["chat"] = doc["chat"][-60:]
+    save(doc, "chat")
+    return {"reply": reply, "messages": doc["chat"][-60:]}
