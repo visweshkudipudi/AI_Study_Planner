@@ -67,11 +67,11 @@ def update_streak(doc: dict) -> tuple[int, str]:
 def sanitize_account(doc: dict) -> dict:
     return {
         "user_id": doc["user_id"],
-        "telegram_id": doc.get("telegram_id", ""),
         "streak": doc.get("streak", 0),
         "last_active_date": doc.get("last_active_date", ""),
         "logged_minutes": doc.get("logged_minutes", 0),
         "plans": doc.get("plans", []),
+        "chat_history": doc.get("chat_history", [])[-30:],
     }
 
 
@@ -107,11 +107,45 @@ def call_groq_json(system_prompt: str, user_prompt: str) -> dict:
         raise HTTPException(status_code=502, detail=f"AI request failed: {str(e)}")
 
 
+def build_student_context(doc: dict, active_plan_id: str) -> str:
+    plans = doc.get("plans", [])
+    plan = next((p for p in plans if p.get("plan_id") == active_plan_id), None)
+    if not plan and plans:
+        plan = plans[0]
+
+    streak = doc.get("streak", 0)
+    hours = round(int(doc.get("logged_minutes", 0)) / 60, 1)
+
+    if not plan:
+        return (
+            f"Student username: {doc['user_id']} | Streak: {streak} days | Logged study time: {hours} hrs. "
+            "No active study plan created yet."
+        )
+
+    pending = []
+    completed = 0
+    total = 0
+    for day in plan.get("days", []):
+        for task in day.get("tasks", []):
+            total += 1
+            if task.get("done"):
+                completed += 1
+            elif len(pending) < 12:
+                pending.append(f"Day {day.get('day')}: [{task.get('subject')}] {task.get('topic')} ({task.get('duration')})")
+
+    return (
+        f"Student username: {doc['user_id']} | Streak: {streak} days | Total logged: {hours} hrs\n"
+        f"Active Plan: {plan.get('plan_name')} ({completed}/{total} tasks done)\n"
+        f"Subjects: {plan.get('subjects')}\n"
+        f"Weak Topics: {plan.get('weak_topics') or 'None specified'}\n"
+        f"Upcoming Pending Tasks:\n" + ("\n".join(f"- {p}" for p in pending) if pending else "- All tasks completed!")
+    )
+
+
 # -------------------- Request Models --------------------
 class AuthRequest(BaseModel):
     user_id: str
     pin: str
-    telegram_id: str = ""
 
 
 class GeneratePlanRequest(BaseModel):
@@ -158,6 +192,18 @@ class TopicRequest(BaseModel):
     topic: str
 
 
+class ChatSendRequest(BaseModel):
+    user_id: str
+    pin: str
+    message: str
+    active_plan_id: str = ""
+
+
+class ChatClearRequest(BaseModel):
+    user_id: str
+    pin: str
+
+
 # -------------------- Endpoints --------------------
 @app.get("/health")
 def health():
@@ -182,22 +228,16 @@ def auth_user(req: AuthRequest):
     if doc:
         if doc.get("pin_hash") != pin_hash:
             raise HTTPException(status_code=401, detail="Wrong PIN for this username.")
-        if req.telegram_id.strip() and req.telegram_id.strip() != doc.get("telegram_id", ""):
-            doc["telegram_id"] = req.telegram_id.strip()
-            accounts_col.update_one(
-                {"user_id": clean_user},
-                {"$set": {"telegram_id": doc["telegram_id"]}},
-            )
         return {"ok": True, "created": False, "account": sanitize_account(doc)}
 
     new_doc = {
         "user_id": clean_user,
         "pin_hash": pin_hash,
-        "telegram_id": req.telegram_id.strip(),
         "streak": 0,
         "last_active_date": "",
         "logged_minutes": 0,
         "plans": [],
+        "chat_history": [],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     accounts_col.insert_one(new_doc)
@@ -241,7 +281,6 @@ Return ONLY valid JSON matching this schema:
         prompt,
     )
 
-    # Guarantee unique task IDs
     days_list = plan_json.get("days", [])
     for d_idx, day in enumerate(days_list, start=1):
         day["day"] = d_idx
@@ -473,3 +512,63 @@ Return ONLY valid JSON:
         prompt,
     )
     return {"ok": True, "questions": data.get("questions", [])}
+
+
+# -------------------- Exclusive LearnPulse AI Chatbot --------------------
+@app.post("/api/chat/send")
+def chat_send(req: ChatSendRequest):
+    doc = require_verified_user(req.user_id, req.pin)
+    if groq_client is None:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured on Render")
+
+    user_msg = req.message.strip()
+    if not user_msg:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    student_ctx = build_student_context(doc, req.active_plan_id)
+    history = doc.get("chat_history", [])
+
+    system_prompt = (
+        "You are PulseBot, the exclusive built-in AI Study Mentor inside LearnPulse OS "
+        "(developed by Viswesh & Team, Dept of CSE). "
+        "Help the student understand concepts, write clean simplified code, solve derivations, "
+        "prepare for exams, and stay on track with their study plan. "
+        "Keep answers clear, structured, friendly, and concise.\n\n"
+        f"LIVE STUDENT CONTEXT:\n{student_ctx}"
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+    for item in history[-10:]:
+        role = item.get("role")
+        content = item.get("content", "")
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_msg})
+
+    try:
+        completion = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=messages,
+            temperature=0.5,
+        )
+        reply_text = (completion.choices[0].message.content or "").strip()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"PulseBot error: {str(e)}")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    history.append({"role": "user", "content": user_msg, "ts": now_iso})
+    history.append({"role": "assistant", "content": reply_text, "ts": now_iso})
+    trimmed_history = history[-30:]
+
+    accounts_col.update_one(
+        {"user_id": doc["user_id"]},
+        {"$set": {"chat_history": trimmed_history}},
+    )
+    return {"ok": True, "reply": reply_text, "chat_history": trimmed_history}
+
+
+@app.post("/api/chat/clear")
+def chat_clear(req: ChatClearRequest):
+    doc = require_verified_user(req.user_id, req.pin)
+    accounts_col.update_one({"user_id": doc["user_id"]}, {"$set": {"chat_history": []}})
+    return {"ok": True, "chat_history": []}
