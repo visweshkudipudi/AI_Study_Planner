@@ -1,5 +1,4 @@
-
-  const API_BASE = "https://ai-study-planner-api-6agl.onrender.com"; // <-- Replace with YOUR Render URL (no trailing slash)
+const API_BASE = "https://ai-study-planner-api.onrender.com"; // <-- Paste YOUR Render URL here (no trailing slash)
 
 let session = { user_id: "", pin: "" };
 let account = null;
@@ -19,6 +18,15 @@ function escHtml(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function formatBotText(text) {
+  let safe = escHtml(text);
+  safe = safe.replace(/```(?:\w+)?\n?([\s\S]*?)```/g, "<pre><code>$1</code></pre>");
+  safe = safe.replace(/`([^`]+)`/g, "<code>$1</code>");
+  safe = safe.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  safe = safe.replace(/\n/g, "<br>");
+  return safe;
 }
 
 function getActivePlan() {
@@ -55,7 +63,6 @@ async function handleAuth(event) {
   event.preventDefault();
   const user_id = document.getElementById("login-user").value.trim().toLowerCase();
   const pin = document.getElementById("login-pin").value.trim();
-  const telegram_id = document.getElementById("login-tg").value.trim();
   const errEl = document.getElementById("auth-error");
   const btn = document.getElementById("auth-btn");
 
@@ -67,7 +74,7 @@ async function handleAuth(event) {
     const res = await fetch(`${API_BASE}/api/auth`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id, pin, telegram_id }),
+      body: JSON.stringify({ user_id, pin }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Login failed");
@@ -94,7 +101,7 @@ async function autoRestoreSession() {
     const res = await fetch(`${API_BASE}/api/auth`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: parsed.user_id, pin: parsed.pin, telegram_id: "" }),
+      body: JSON.stringify({ user_id: parsed.user_id, pin: parsed.pin }),
     });
     if (!res.ok) return;
     const data = await res.json();
@@ -103,7 +110,7 @@ async function autoRestoreSession() {
     activePlanId = account.plans[0]?.plan_id || null;
     enterWorkspace();
   } catch {
-    // Stay on login screen if Render is still cold-starting
+    // Stay on login screen if Render is waking up
   }
 }
 
@@ -135,13 +142,13 @@ function switchTab(tabName) {
   document.querySelectorAll(".tab-pane").forEach((p) => p.classList.add("hidden"));
   document.getElementById(`tab-${tabName}`).classList.remove("hidden");
   if (tabName === "analytics") renderAnalytics();
+  if (tabName === "chat") renderChat();
 }
 
 // -------------------- Rendering --------------------
 function renderAll() {
   if (!account) return;
 
-  // Metrics strip
   const totalDone = account.plans.reduce((acc, p) => {
     let c = 0;
     (p.days || []).forEach((d) => (d.tasks || []).forEach((t) => { if (t.done) c++; }));
@@ -154,7 +161,8 @@ function renderAll() {
   document.getElementById("stat-hours").textContent = `${((account.logged_minutes || 0) / 60).toFixed(1)} hrs`;
   document.getElementById("stat-completed").textContent = `${totalDone} tasks`;
 
-  // Plan selector
+  renderChat();
+
   const selector = document.getElementById("plan-selector");
   const delBtn = document.getElementById("delete-plan-btn");
   const actionsBar = document.getElementById("plan-actions-bar");
@@ -222,6 +230,7 @@ function renderActivePlan() {
               <div class="task-actions no-print">
                 <button class="mini-ai-btn" onclick="openTopicHelp('${t.id}')">💡 Notes</button>
                 <button class="mini-ai-btn" onclick="openTopicQuiz('${t.id}')">🧠 Quiz</button>
+                <button class="mini-ai-btn" onclick="askPulseBotAboutTask('${t.id}')">🤖 Ask</button>
               </div>
             </div>
           `;
@@ -244,6 +253,119 @@ function renderActivePlan() {
   const pct = total ? Math.round((done / total) * 100) : 0;
   document.getElementById("progress-text").textContent = `${pct}% (${done}/${total})`;
   document.getElementById("progress-fill").style.width = `${pct}%`;
+}
+
+// -------------------- Exclusive PulseBot Chat --------------------
+function renderChat(pendingUserText = "") {
+  const container = document.getElementById("chat-messages");
+  if (!container) return;
+
+  const history = account?.chat_history || [];
+  let html = "";
+
+  if (!history.length && !pendingUserText) {
+    html = `
+      <div class="msg-row assistant">
+        <span class="msg-sender">🤖 PulseBot</span>
+        <div class="msg-bubble">
+          Hey <strong>${escHtml(account?.user_id || "there")}</strong>! I am <strong>PulseBot</strong>, your exclusive AI Study Mentor built into LearnPulse OS.<br><br>
+          Ask me to explain any concept, write simplified code, solve derivations, or guide your next study session!
+        </div>
+      </div>
+    `;
+  } else {
+    html = history
+      .map(
+        (m) => `
+        <div class="msg-row ${m.role}">
+          <span class="msg-sender">${m.role === "user" ? "👤 You" : "🤖 PulseBot"}</span>
+          <div class="msg-bubble">${m.role === "assistant" ? formatBotText(m.content) : escHtml(m.content)}</div>
+        </div>
+      `
+      )
+      .join("");
+  }
+
+  if (pendingUserText) {
+    html += `
+      <div class="msg-row user">
+        <span class="msg-sender">👤 You</span>
+        <div class="msg-bubble">${escHtml(pendingUserText)}</div>
+      </div>
+      <div class="msg-row assistant">
+        <span class="msg-sender">🤖 PulseBot</span>
+        <div class="msg-bubble">⏳ Thinking...</div>
+      </div>
+    `;
+  }
+
+  container.innerHTML = html;
+  container.scrollTop = container.scrollHeight;
+}
+
+async function sendChatMessage(event) {
+  if (event) event.preventDefault();
+  const input = document.getElementById("chat-input");
+  const btn = document.getElementById("chat-send-btn");
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = "";
+  btn.disabled = true;
+  renderChat(text);
+
+  try {
+    const res = await fetch(`${API_BASE}/api/chat/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: session.user_id,
+        pin: session.pin,
+        message: text,
+        active_plan_id: activePlanId || "",
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "PulseBot could not reply.");
+
+    account.chat_history = data.chat_history || [];
+    renderChat();
+  } catch (err) {
+    alert(`PulseBot Error: ${err.message}`);
+    renderChat();
+  } finally {
+    btn.disabled = false;
+    input.focus();
+  }
+}
+
+function sendQuickPrompt(promptText) {
+  document.getElementById("chat-input").value = promptText;
+  sendChatMessage(null);
+}
+
+function askPulseBotAboutTask(taskId) {
+  const task = findTaskById(taskId);
+  if (!task) return;
+  switchTab("chat");
+  sendQuickPrompt(`Explain "${task.topic}" in ${task.subject} clearly with an easy example for exams.`);
+}
+
+async function clearChat() {
+  if (!confirm("Clear your PulseBot conversation history?")) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/chat/clear`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: session.user_id, pin: session.pin }),
+    });
+    if (res.ok) {
+      account.chat_history = [];
+      renderChat();
+    }
+  } catch {
+    alert("Could not clear chat right now.");
+  }
 }
 
 // -------------------- Plan Actions --------------------
@@ -491,7 +613,7 @@ async function openTopicQuiz(taskId) {
   }
 }
 
-function answerQuiz(qIdx, selectedIdx, btnEl) {
+function answerQuiz(qIdx, selectedIdx) {
   const card = document.getElementById(`quiz-q-${qIdx}`);
   if (card.dataset.answered) return;
   card.dataset.answered = "1";
