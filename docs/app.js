@@ -1,4 +1,4 @@
-const API_BASE = "https://ai-study-planner-api.onrender.com"; // <-- Paste YOUR Render URL here (no trailing slash)
+const API_BASE = "https://ai-study-planner-api-6agl.onrender.com"; // <-- Paste YOUR Render URL here (no trailing slash)
 
 let session = { user_id: "", pin: "" };
 let account = null;
