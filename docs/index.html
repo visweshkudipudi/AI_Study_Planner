@@ -3,267 +3,597 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LearnPulse OS | Adaptive AI Study Planner &amp; PulseBot — Dept of CSE</title>
-  <link rel="stylesheet" href="style.css?v=3" />
+  <title>LearnPulse OS — AI Smart Time-Blocking &amp; Study Planner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css?v=4" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 </head>
 <body>
-  <!-- Top OS Bar -->
-  <header class="topbar no-print">
-    <div class="wrap topbar-inner">
-      <div class="brand">
-        <div class="brand-logo">⚡</div>
+  <!-- AUTH SCREEN -->
+  <div id="auth-screen" class="auth-page no-print">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <div class="logo-mark">⚡</div>
         <div>
           <h1>LearnPulse OS</h1>
-          <p class="brand-sub">Viswesh &amp; Team • Dept of CSE</p>
+          <span>Smart AI Calendar • Viswesh &amp; Team, Dept of CSE</span>
         </div>
       </div>
-      <div class="top-right">
-        <span id="header-streak" class="pill hidden">🔥 0d</span>
-        <span id="api-status" class="pill">Connecting...</span>
-        <button id="logout-btn" class="btn-icon hidden" onclick="logout()" title="Switch Account">🚪</button>
-      </div>
-    </div>
-  </header>
 
-  <!-- Sign In / PIN Unlock Screen -->
-  <section id="auth-screen" class="wrap auth-wrap no-print">
-    <div class="card auth-card">
-      <div class="auth-badge">⚡ LearnPulse OS v2.1 • Exclusive AI Edition</div>
-      <h2>Welcome to LearnPulse OS</h2>
-      <p class="muted">
-        Adaptive AI study scheduling, built-in <strong>PulseBot</strong> mentor chat, instant quizzes, streak analytics, and calendar sync — developed by
-        <strong>Viswesh &amp; Team, Dept of CSE</strong>.
+      <div class="auth-pill-row">
+        <span id="auth-api-status" class="status-pill">● Connecting...</span>
+        <span class="status-pill accent">AI Time-Blocking</span>
+      </div>
+
+      <h2>Sign in to your AI Planner</h2>
+      <p class="subtext">
+        Auto-schedule study tasks by priority, defend Focus Time, weave in flexible Habits, and chat with PulseBot.
       </p>
 
       <form onsubmit="handleAuth(event)">
         <label>Student Username</label>
         <input id="login-user" type="text" placeholder="e.g. viswesh" required autocomplete="username" />
 
-        <label>4-Digit Account PIN</label>
-        <input id="login-pin" type="password" inputmode="numeric" minlength="4" placeholder="Enter PIN (new users auto-register)" required />
+        <label>4-Digit PIN</label>
+        <input id="login-pin" type="password" inputmode="numeric" minlength="4" placeholder="Enter PIN (new accounts auto-create)" required />
 
-        <p id="auth-error" class="error-msg"></p>
-        <button id="auth-btn" type="submit" class="btn-primary">🚀 Launch LearnPulse OS</button>
+        <p id="auth-error" class="error-text"></p>
+        <button id="auth-btn" type="submit" class="btn-primary full">Launch LearnPulse OS →</button>
       </form>
     </div>
-  </section>
+  </div>
 
-  <!-- Main OS Workspace -->
-  <main id="app-shell" class="wrap hidden">
-    <!-- Quick Metrics Strip -->
-    <section class="stats-strip no-print">
-      <div class="stat-box">
-        <span class="stat-label">Student</span>
-        <strong id="display-user">—</strong>
-      </div>
-      <div class="stat-box">
-        <span class="stat-label">Streak</span>
-        <strong id="stat-streak">🔥 0 days</strong>
-      </div>
-      <div class="stat-box">
-        <span class="stat-label">Logged</span>
-        <strong id="stat-hours">0.0 hrs</strong>
-      </div>
-      <div class="stat-box">
-        <span class="stat-label">Done</span>
-        <strong id="stat-completed">0 tasks</strong>
-      </div>
-    </section>
-
-    <!-- Navigation Tabs (5 Native OS Modules) -->
-    <nav class="os-tabs no-print">
-      <button class="tab-btn active" data-tab="schedule" onclick="switchTab('schedule')"><span>🗓️</span><em>Plan</em></button>
-      <button class="tab-btn" data-tab="chat" onclick="switchTab('chat')"><span>🤖</span><em>PulseBot</em></button>
-      <button class="tab-btn" data-tab="create" onclick="switchTab('create')"><span>✨</span><em>New</em></button>
-      <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')"><span>📊</span><em>Stats</em></button>
-      <button class="tab-btn" data-tab="focus" onclick="switchTab('focus')"><span>⏱️</span><em>Focus</em></button>
-    </nav>
-
-    <!-- TAB 1: SCHEDULE -->
-    <section id="tab-schedule" class="tab-pane">
-      <div class="card plan-toolbar no-print">
-        <div class="toolbar-row">
-          <select id="plan-selector" onchange="selectPlan(this.value)"></select>
-          <button id="delete-plan-btn" class="btn-danger-sm" onclick="deleteActivePlan()" title="Delete Plan">🗑️</button>
-        </div>
-        <div id="plan-actions-bar" class="action-chips hidden">
-          <button class="chip-btn chip-warn" onclick="openRebalanceModal()">🔄 Fell Behind? Rebalance</button>
-          <button class="chip-btn" onclick="exportICS()">📅 Google Calendar (.ics)</button>
-          <button class="chip-btn" onclick="window.print()">🖨️ Print / PDF</button>
+  <!-- MAIN RECLAIM-STYLE WORKSPACE -->
+  <div id="app-shell" class="app-layout hidden">
+    <!-- Left Navigation Rail -->
+    <aside class="sidebar no-print">
+      <div class="sidebar-brand">
+        <div class="logo-mark sm">⚡</div>
+        <div class="brand-text">
+          <strong>LearnPulse OS</strong>
+          <span>Viswesh &amp; Team • CSE</span>
         </div>
       </div>
 
-      <div id="empty-plan-state" class="card center-box no-print">
-        <h3>No Study Plans Yet</h3>
-        <p class="muted">Create your first AI-powered adaptive study schedule to unlock topic notes, quizzes, and PulseBot mentoring.</p>
-        <button class="btn-primary" style="max-width:260px; margin:1rem auto 0;" onclick="switchTab('create')">✨ Create First Plan</button>
-      </div>
-
-      <div id="active-plan-area" class="card hidden">
-        <div class="print-banner">
-          <h2>LearnPulse OS — Study Timetable</h2>
-          <p>Developed by Viswesh &amp; Team • Dept of CSE</p>
-        </div>
-
-        <div class="plan-head">
-          <div>
-            <h2 id="plan-title-display">Study Plan</h2>
-            <p id="plan-summary" class="muted"></p>
-          </div>
-          <strong id="progress-text" class="progress-badge">0%</strong>
-        </div>
-        <div class="progress-bar no-print"><div id="progress-fill"></div></div>
-        <div id="days-container"></div>
-      </div>
-    </section>
-
-    <!-- TAB 2: EXCLUSIVE LEARNPULSE AI CHATBOT (PULSEBOT) -->
-    <section id="tab-chat" class="tab-pane hidden no-print">
-      <div class="card chat-shell">
-        <div class="chat-top">
-          <div>
-            <h2>🤖 PulseBot — LearnPulse AI Mentor</h2>
-            <p class="muted">Synced live with your active study plan, weak topics &amp; progress.</p>
-          </div>
-          <button class="chip-btn" onclick="clearChat()">🧹 Clear</button>
-        </div>
-
-        <div id="chat-messages" class="chat-messages"></div>
-
-        <div class="quick-prompts">
-          <button class="chip-btn" onclick="sendQuickPrompt('What should I study next from my active plan?')">📌 What next?</button>
-          <button class="chip-btn" onclick="sendQuickPrompt('Explain my weak topics in simple exam-ready points.')">⚡ Weak topics</button>
-          <button class="chip-btn" onclick="sendQuickPrompt('Give me 3 rapid-fire revision questions from my subjects.')">🧠 Rapid revision</button>
-          <button class="chip-btn" onclick="sendQuickPrompt('Give me a quick study strategy to boost my streak today.')">🔥 Study boost</button>
-        </div>
-
-        <form class="chat-input-bar" onsubmit="sendChatMessage(event)">
-          <input id="chat-input" type="text" placeholder="Ask PulseBot any doubt, code, formula, or revision question..." autocomplete="off" required />
-          <button id="chat-send-btn" type="submit" class="btn-primary chat-send-btn">Send ➤</button>
-        </form>
-      </div>
-    </section>
-
-    <!-- TAB 3: CREATE NEW PLAN -->
-    <section id="tab-create" class="tab-pane hidden no-print">
-      <div class="card">
-        <h2>✨ Generate New Adaptive Plan</h2>
-        <p class="muted" style="margin-bottom:0.75rem;">
-          Maintain separate study plans for Mid Exams, Lab Internals, or Coding Practice.
-        </p>
-        <form id="plan-form" onsubmit="generatePlan(event)">
-          <label>Plan Name</label>
-          <input id="plan-name" type="text" placeholder="e.g. B.Tech Mid-1 Exam Prep" required />
-
-          <label>Subjects (comma-separated)</label>
-          <input id="subjects" type="text" placeholder="C Programming, Linear Algebra, Physics, BEEE" required />
-
-          <div class="grid-3">
-            <div>
-              <label>Days</label>
-              <input id="days" type="number" min="1" max="30" value="7" required />
-            </div>
-            <div>
-              <label>Hours / Day</label>
-              <input id="hours" type="number" min="1" max="14" step="0.5" value="3" required />
-            </div>
-            <div>
-              <label>Start Date</label>
-              <input id="start-date" type="date" required />
-            </div>
-          </div>
-
-          <label>Weak Topics Needing Extra Focus (optional)</label>
-          <input id="weak-topics" type="text" placeholder="e.g. Pointers, Eigenvalues, Wave Optics, DC Motors" />
-
-          <button type="submit" id="gen-btn" class="btn-primary">⚡ Generate AI Schedule</button>
-        </form>
-      </div>
-    </section>
-
-    <!-- TAB 4: ANALYTICS -->
-    <section id="tab-analytics" class="tab-pane hidden no-print">
-      <div id="analytics-empty" class="card center-box hidden">
-        <h3>No Analytics Data Yet</h3>
-        <p class="muted">Generate a study plan and check off tasks to unlock subject-wise progress charts.</p>
-      </div>
-      <div id="analytics-charts" class="analytics-grid">
-        <div class="card">
-          <h3>🎯 Overall Completion</h3>
-          <div class="chart-wrap"><canvas id="overall-chart"></canvas></div>
-        </div>
-        <div class="card">
-          <h3>📚 Subject-Wise Progress (%)</h3>
-          <div class="chart-wrap"><canvas id="subject-chart"></canvas></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- TAB 5: FOCUS TIMER -->
-    <section id="tab-focus" class="tab-pane hidden no-print">
-      <div class="card center-box">
-        <h2>⏱️ LearnPulse Focus Timer</h2>
-        <p id="timer-mode-label" class="muted">Deep Study Session — auto-logs into your Analytics</p>
-        <div id="timer-display" class="timer-big">25:00</div>
-
-        <div class="preset-row">
-          <button class="chip-btn" onclick="setTimerMinutes(25)">25m Pomodoro</button>
-          <button class="chip-btn" onclick="setTimerMinutes(50)">50m Deep Work</button>
-          <button class="chip-btn" onclick="setTimerMinutes(10)">10m Quick Review</button>
-        </div>
-
-        <div class="timer-controls">
-          <button class="btn-primary" onclick="startTimer()">▶ Start</button>
-          <button class="btn-secondary" onclick="pauseTimer()">⏸ Pause</button>
-          <button class="btn-secondary" onclick="resetTimer()">↺ Reset</button>
-        </div>
-        <button class="chip-btn" style="margin-top:0.85rem;" onclick="logCurrentSession()">
-          ✅ Log Session Now (+<span id="log-mins-preview">25</span> min)
+      <nav class="nav-list">
+        <button class="nav-item active" data-view="planner" onclick="switchView('planner')">
+          <span class="nav-ico">🗓️</span><span class="nav-lbl">Planner</span>
         </button>
-        <p id="session-log-msg" class="muted" style="margin-top:0.5rem;"></p>
-      </div>
-    </section>
-  </main>
+        <button class="nav-item" data-view="tasks" onclick="switchView('tasks')">
+          <span class="nav-ico">✅</span><span class="nav-lbl">Tasks</span>
+        </button>
+        <button class="nav-item" data-view="habits" onclick="switchView('habits')">
+          <span class="nav-ico">🔁</span><span class="nav-lbl">Habits</span>
+        </button>
+        <button class="nav-item" data-view="focus" onclick="switchView('focus')">
+          <span class="nav-ico">🎯</span><span class="nav-lbl">Focus Time</span>
+        </button>
+        <button class="nav-item" data-view="analytics" onclick="switchView('analytics')">
+          <span class="nav-ico">📊</span><span class="nav-lbl">Analytics</span>
+        </button>
+        <button class="nav-item" data-view="chat" onclick="switchView('chat')">
+          <span class="nav-ico">🤖</span><span class="nav-lbl">PulseBot</span>
+        </button>
+      </nav>
 
-  <!-- Rebalance Modal -->
+      <div class="sidebar-footer">
+        <button class="btn-primary full sm" onclick="openNewPlanModal()">+ New AI Plan</button>
+        <div class="user-chip">
+          <div class="avatar" id="user-avatar">V</div>
+          <div class="user-meta">
+            <strong id="sidebar-user">student</strong>
+            <span id="sidebar-streak">🔥 0d streak</span>
+          </div>
+          <button class="icon-btn" onclick="logout()" title="Sign out">🚪</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Column -->
+    <div class="main-col">
+      <!-- Top Utility Header -->
+      <header class="top-header no-print">
+        <div class="header-left">
+          <h2 id="view-heading">AI Planner</h2>
+          <span id="api-status" class="status-pill">● Checking...</span>
+        </div>
+        <div class="header-right">
+          <select id="plan-selector" class="select-sm" onchange="selectPlan(this.value)"></select>
+          <button class="btn-ghost sm" onclick="openNewPlanModal()">✨ New Plan</button>
+          <button class="icon-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle Light/Dark">🌙</button>
+        </div>
+      </header>
+
+      <!-- PREVIEW MODE BANNER (Reclaim Signature Feature) -->
+      <div id="preview-banner" class="preview-banner hidden no-print">
+        <div class="preview-info">
+          <strong>👀 Preview Mode:</strong> Review AI's proposed schedule below. All 🔒 Locked blocks are preserved.
+        </div>
+        <div class="preview-actions">
+          <button class="btn-ghost sm" onclick="discardPreview()">✕ Discard</button>
+          <button id="apply-preview-btn" class="btn-primary sm" onclick="applyPreview()">✅ Apply Schedule</button>
+        </div>
+      </div>
+
+      <!-- VIEW 1: PLANNER (HOURLY CALENDAR + PRIORITY QUEUE) -->
+      <section id="view-planner" class="view-pane">
+        <!-- Empty State -->
+        <div id="planner-empty" class="empty-card hidden no-print">
+          <div class="empty-ico">🗓️</div>
+          <h3>Your Smart Calendar is Empty</h3>
+          <p class="subtext">Generate an AI time-blocked plan and LearnPulse OS will automatically schedule Focus Time, P1–P4 tasks, Habits, and decompression buffers.</p>
+          <button class="btn-primary" onclick="openNewPlanModal()">✨ Create Your First AI Plan</button>
+        </div>
+
+        <!-- Active Planner Shell -->
+        <div id="planner-active" class="planner-shell hidden">
+          <!-- Calendar Toolbar -->
+          <div class="planner-toolbar no-print">
+            <div class="day-pills" id="day-pills"></div>
+            <div class="toolbar-actions">
+              <button class="btn-soft-indigo sm" onclick="openAddBlockModal()">+ Add Block</button>
+              <button class="btn-soft-amber sm" onclick="openRebalanceModal()">⚡ AI Rebalance</button>
+              <button class="btn-ghost sm" onclick="exportICS()">📅 .ics</button>
+              <button class="btn-ghost sm" onclick="window.print()">🖨️ PDF</button>
+              <button class="btn-ghost sm danger-txt" onclick="deleteActivePlan()" title="Delete plan">🗑️</button>
+            </div>
+          </div>
+
+          <!-- Legend Bar -->
+          <div class="legend-bar no-print">
+            <span><i class="dot focus"></i>Focus Time</span>
+            <span><i class="dot task"></i>Tasks (P1–P4)</span>
+            <span><i class="dot habit"></i>Habits</span>
+            <span><i class="dot fixed"></i>🔒 Locked / Fixed</span>
+            <span><i class="dot buffer"></i>Auto-Buffer</span>
+            <span class="legend-right" id="plan-progress-pill">0% completed</span>
+          </div>
+
+          <!-- Print-Only Header -->
+          <div class="print-only-header">
+            <h2 id="print-plan-title">LearnPulse OS Timetable</h2>
+            <p>Developed by Viswesh &amp; Team • Dept of CSE</p>
+          </div>
+
+          <!-- Split Grid: Hourly Calendar (Left) + Side Inspector/Queue (Right) -->
+          <div class="planner-split">
+            <!-- Hourly Timeline Calendar -->
+            <div class="calendar-card">
+              <div class="cal-head">
+                <div>
+                  <h3 id="cal-day-title">Day 1</h3>
+                  <span id="cal-day-date" class="subtext"></span>
+                </div>
+                <div class="cal-mode-switch no-print">
+                  <button class="seg-btn active" id="mode-day-btn" onclick="setCalMode('day')">Day Grid</button>
+                  <button class="seg-btn" id="mode-week-btn" onclick="setCalMode('week')">3-Day Grid</button>
+                </div>
+              </div>
+              <div class="timeline-scroll" id="timeline-scroll">
+                <div class="timeline-grid" id="timeline-grid"></div>
+              </div>
+            </div>
+
+            <!-- Right Context Panel: Priority Queue & AI Strategy -->
+            <aside class="side-panel no-print">
+              <div class="panel-box">
+                <div class="panel-head">
+                  <h4>🧠 AI Strategy</h4>
+                  <span class="mini-tag" id="defense-mode-badge">Proactive</span>
+                </div>
+                <p id="plan-summary" class="subtext"></p>
+              </div>
+
+              <div class="panel-box">
+                <div class="panel-head">
+                  <h4>🔥 Priority Queue</h4>
+                  <span class="subtext" id="queue-count">0 pending</span>
+                </div>
+                <div id="priority-queue-list" class="queue-list"></div>
+              </div>
+
+              <div class="panel-box">
+                <div class="panel-head">
+                  <h4>🤖 Quick PulseBot</h4>
+                </div>
+                <p class="subtext" style="margin-bottom:0.55rem;">Need help with a topic on today's calendar?</p>
+                <button class="btn-ghost full sm" onclick="switchView('chat')">Open PulseBot Assistant →</button>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 2: PRIORITY TASK LIST -->
+      <section id="view-tasks" class="view-pane hidden no-print">
+        <div class="section-top">
+          <div>
+            <h3>Smart Priority Tasks</h3>
+            <p class="subtext">Ordered automatically by P1 Critical → P4 Low. Tap any task to lock, defend, or study with AI.</p>
+          </div>
+          <div style="display:flex; gap:0.5rem;">
+            <button class="btn-soft-indigo sm" onclick="openAddBlockModal()">+ Add Task</button>
+            <button class="btn-soft-amber sm" onclick="openRebalanceModal()">⚡ Auto-Reschedule</button>
+          </div>
+        </div>
+        <div id="all-tasks-list" class="card-list"></div>
+      </section>
+
+      <!-- VIEW 3: FLEXIBLE HABITS -->
+      <section id="view-habits" class="view-pane hidden no-print">
+        <div class="section-top">
+          <div>
+            <h3>Flexible Study Habits</h3>
+            <p class="subtext">Recurring routines with flexible time windows—LearnPulse weaves them around your priority exam blocks.</p>
+          </div>
+        </div>
+
+        <div class="two-col-grid">
+          <div class="panel-box">
+            <h4>+ Create Flexible Habit</h4>
+            <form onsubmit="saveHabit(event)" class="form-stack">
+              <label>Habit Name</label>
+              <input id="hab-title" type="text" placeholder="e.g. C Coding Practice / Formula Recall" required />
+              <label>Subject / Category</label>
+              <input id="hab-subject" type="text" placeholder="e.g. C Programming" required />
+              <div class="form-row-2">
+                <div>
+                  <label>Duration (min)</label>
+                  <input id="hab-dur" type="number" min="15" max="180" value="45" required />
+                </div>
+                <div>
+                  <label>Time Defense</label>
+                  <select id="hab-def">
+                    <option value="busy">🛡️ Busy (Defended)</option>
+                    <option value="free">🔓 Free (Flexible)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-row-3">
+                <div>
+                  <label>Earliest</label>
+                  <input id="hab-start" type="time" value="17:00" required />
+                </div>
+                <div>
+                  <label>Ideal Time</label>
+                  <input id="hab-ideal" type="time" value="18:00" required />
+                </div>
+                <div>
+                  <label>Latest</label>
+                  <input id="hab-end" type="time" value="21:00" required />
+                </div>
+              </div>
+              <button type="submit" class="btn-primary full sm">Save Flexible Habit</button>
+            </form>
+          </div>
+
+          <div class="panel-box">
+            <h4>Active Smart Habits</h4>
+            <div id="habits-list" class="habit-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 4: FOCUS TIME & DEFENSE SETTINGS -->
+      <section id="view-focus" class="view-pane hidden no-print">
+        <div class="two-col-grid">
+          <!-- Focus Timer -->
+          <div class="panel-box center-panel">
+            <span class="status-pill accent">🛡️ Defended Focus Session</span>
+            <h3 style="margin-top:0.6rem;">Deep Work Timer</h3>
+            <div id="timer-display" class="timer-digits">25:00</div>
+            <div class="preset-group">
+              <button class="btn-ghost sm" onclick="setTimerMinutes(25)">25m Sprint</button>
+              <button class="btn-ghost sm" onclick="setTimerMinutes(50)">50m Deep Focus</button>
+              <button class="btn-ghost sm" onclick="setTimerMinutes(90)">90m Exam Sim</button>
+            </div>
+            <div class="timer-btns">
+              <button class="btn-primary sm" onclick="startTimer()">▶ Start</button>
+              <button class="btn-ghost sm" onclick="pauseTimer()">⏸ Pause</button>
+              <button class="btn-ghost sm" onclick="resetTimer()">↺ Reset</button>
+            </div>
+            <button class="btn-soft-teal sm" style="margin-top:0.85rem;" onclick="logCurrentSession()">
+              ✅ Log +<span id="log-mins-preview">25</span> min to Focus Goal
+            </button>
+            <p id="session-log-msg" class="subtext" style="margin-top:0.45rem;"></p>
+          </div>
+
+          <!-- Scheduling & Defense Preferences -->
+          <div class="panel-box">
+            <h4>⚙️ Time Defense &amp; Buffer Engine</h4>
+            <p class="subtext">Configure your study hours, weekly Focus Time target, and automatic decompression breaks.</p>
+            <form onsubmit="saveSettings(event)" class="form-stack">
+              <div class="form-row-2">
+                <div>
+                  <label>Study Day Starts</label>
+                  <input id="set-start" type="time" value="07:00" />
+                </div>
+                <div>
+                  <label>Study Day Ends</label>
+                  <input id="set-end" type="time" value="22:30" />
+                </div>
+              </div>
+              <div class="form-row-2">
+                <div>
+                  <label>Weekly Focus Goal (hrs)</label>
+                  <input id="set-goal" type="number" min="2" max="60" value="14" />
+                </div>
+                <div>
+                  <label>Defense Strategy</label>
+                  <select id="set-defense">
+                    <option value="proactive">Proactive (Pre-block early)</option>
+                    <option value="reactive">Reactive (Stay flexible)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-row-2">
+                <div>
+                  <label>Auto-Buffers Between Blocks</label>
+                  <select id="set-buffers">
+                    <option value="true">Enabled (Recommended)</option>
+                    <option value="false">Disabled</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Buffer Length (min)</label>
+                  <input id="set-buf-min" type="number" min="5" max="30" value="15" />
+                </div>
+              </div>
+              <button type="submit" class="btn-primary full sm">Save Time Rules</button>
+              <p id="settings-msg" class="subtext"></p>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 5: ANALYTICS -->
+      <section id="view-analytics" class="view-pane hidden no-print">
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span>Weekly Focus Goal</span>
+            <strong id="kpi-goal">0.0 / 14 hrs</strong>
+            <div class="mini-bar"><div id="kpi-goal-fill"></div></div>
+          </div>
+          <div class="kpi-card">
+            <span>Active Streak</span>
+            <strong id="kpi-streak">🔥 0 days</strong>
+            <small>Consecutive study days</small>
+          </div>
+          <div class="kpi-card">
+            <span>Defended Time (Busy)</span>
+            <strong id="kpi-defended">0.0 hrs</strong>
+            <small>Protected study blocks</small>
+          </div>
+          <div class="kpi-card">
+            <span>Tasks Completed</span>
+            <strong id="kpi-done">0 / 0</strong>
+            <small>Across active plan</small>
+          </div>
+        </div>
+
+        <div class="two-col-grid" style="margin-top:0.9rem;">
+          <div class="panel-box">
+            <h4>⏱️ Time Allocation by Category (Hours)</h4>
+            <div class="chart-box"><canvas id="category-chart"></canvas></div>
+          </div>
+          <div class="panel-box">
+            <h4>📚 Subject Completion (%)</h4>
+            <div class="chart-box"><canvas id="subject-chart"></canvas></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 6: EXCLUSIVE PULSEBOT CHAT -->
+      <section id="view-chat" class="view-pane hidden no-print">
+        <div class="chat-panel">
+          <div class="chat-header">
+            <div>
+              <h3>🤖 PulseBot — LearnPulse AI Scheduling &amp; Study Mentor</h3>
+              <span class="subtext">Reads your live hourly calendar, P1 priorities, locked blocks, and habits.</span>
+            </div>
+            <button class="btn-ghost sm" onclick="clearChat()">🧹 Clear</button>
+          </div>
+
+          <div id="chat-messages" class="chat-feed"></div>
+
+          <div class="quick-row">
+            <button class="btn-ghost sm" onclick="sendQuickPrompt('What is my highest priority block next on my schedule?')">📌 Next priority</button>
+            <button class="btn-ghost sm" onclick="sendQuickPrompt('Explain my weak topics with clear exam points and formulas.')">⚡ Explain weak topics</button>
+            <button class="btn-ghost sm" onclick="sendQuickPrompt('Quiz me with 3 fast MCQs from my subjects.')">🧠 Quick MCQ drill</button>
+            <button class="btn-ghost sm" onclick="sendQuickPrompt('How can I protect more Focus Time this week?')">🛡️ Focus advice</button>
+          </div>
+
+          <form class="chat-bar" onsubmit="sendChatMessage(event)">
+            <input id="chat-input" type="text" placeholder="Ask PulseBot anything about your syllabus, code, or schedule..." autocomplete="off" required />
+            <button id="chat-send-btn" type="submit" class="btn-primary sm">Send ➤</button>
+          </form>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- MODAL: NEW AI PLAN -->
+  <div id="new-plan-modal" class="modal-backdrop no-print">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>✨ Create New AI Time-Blocked Plan</h3>
+        <button class="icon-btn" onclick="closeModal('new-plan-modal')">✕</button>
+      </div>
+      <form id="plan-form" onsubmit="generatePlan(event)" class="form-stack">
+        <label>Plan Title</label>
+        <input id="plan-name" type="text" placeholder="e.g. B.Tech Mid-1 Smart Schedule" required />
+        <label>Subjects (comma-separated)</label>
+        <input id="subjects" type="text" placeholder="C Programming, Linear Algebra, Physics, BEEE" required />
+        <div class="form-row-3">
+          <div>
+            <label>Days</label>
+            <input id="days" type="number" min="1" max="21" value="7" required />
+          </div>
+          <div>
+            <label>Hours / Day</label>
+            <input id="hours" type="number" min="1" max="12" step="0.5" value="3.5" required />
+          </div>
+          <div>
+            <label>Start Date</label>
+            <input id="start-date" type="date" required />
+          </div>
+        </div>
+        <label>Weak Topics (Auto-assigned P1 Focus Blocks)</label>
+        <input id="weak-topics" type="text" placeholder="e.g. Pointers, Eigenvalues, Wave Optics" />
+        <div class="modal-foot">
+          <button type="button" class="btn-ghost sm" onclick="closeModal('new-plan-modal')">Cancel</button>
+          <button id="gen-btn" type="submit" class="btn-primary sm">⚡ Generate Schedule</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD MANUAL / FIXED BLOCK -->
+  <div id="add-block-modal" class="modal-backdrop no-print">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>+ Schedule Block / Fixed Event</h3>
+        <button class="icon-btn" onclick="closeModal('add-block-modal')">✕</button>
+      </div>
+      <form onsubmit="submitAddBlock(event)" class="form-stack">
+        <div class="form-row-2">
+          <div>
+            <label>Block Category</label>
+            <select id="add-type">
+              <option value="task">✅ Study Task</option>
+              <option value="focus">🎯 Focus Time</option>
+              <option value="fixed">🔒 Fixed Class / Lab (Locked)</option>
+              <option value="habit">🔁 Habit Session</option>
+            </select>
+          </div>
+          <div>
+            <label>Priority</label>
+            <select id="add-priority">
+              <option value="P1">P1 — Critical</option>
+              <option value="P2" selected>P2 — High</option>
+              <option value="P3">P3 — Medium</option>
+              <option value="P4">P4 — Low</option>
+            </select>
+          </div>
+        </div>
+        <label>Subject / Label</label>
+        <input id="add-subject" type="text" placeholder="e.g. College Lab / C Programming" required />
+        <label>Topic / Event Title</label>
+        <input id="add-topic" type="text" placeholder="e.g. Morning Lectures / Pointers Practice" required />
+        <div class="form-row-3">
+          <div>
+            <label>Day #</label>
+            <input id="add-day" type="number" min="1" max="30" value="1" required />
+          </div>
+          <div>
+            <label>Start Time</label>
+            <input id="add-start" type="time" value="10:00" required />
+          </div>
+          <div>
+            <label>Duration (min)</label>
+            <input id="add-dur" type="number" min="15" max="240" value="60" required />
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn-ghost sm" onclick="closeModal('add-block-modal')">Cancel</button>
+          <button type="submit" class="btn-primary sm">Add to Calendar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: AI REBALANCE (TRIGGERS PREVIEW MODE) -->
   <div id="rebalance-modal" class="modal-backdrop no-print">
-    <div class="modal-card">
+    <div class="modal-box">
       <div class="modal-head">
-        <h3>🔄 Adaptive Plan Rebalancer</h3>
-        <button class="btn-icon" onclick="closeRebalanceModal()">✕</button>
+        <h3>⚡ AI Auto-Rebalance (Preview Mode)</h3>
+        <button class="icon-btn" onclick="closeModal('rebalance-modal')">✕</button>
       </div>
-      <p class="muted">
-        All completed tasks stay preserved. LearnPulse AI will redistribute your remaining unfinished topics cleanly.
+      <p class="subtext">
+        All <strong>🔒 Locked</strong> blocks and completed sessions remain untouched. You will inspect the new calendar in <strong>Preview Mode</strong> before applying.
       </p>
-      <label>Remaining Days Left</label>
-      <input id="rebalance-days" type="number" min="1" max="30" value="5" />
-      <label>Available Hours / Day</label>
-      <input id="rebalance-hours" type="number" min="1" max="14" step="0.5" value="3.5" />
-      <div class="modal-actions">
-        <button class="btn-secondary" onclick="closeRebalanceModal()">Cancel</button>
-        <button id="rebalance-submit-btn" class="btn-primary" style="margin-top:0; width:auto;" onclick="submitRebalance()">⚡ Rebalance Now</button>
+      <div class="form-stack">
+        <div class="form-row-2">
+          <div>
+            <label>Remaining Days</label>
+            <input id="rebalance-days" type="number" min="1" max="21" value="5" />
+          </div>
+          <div>
+            <label>Hours / Day</label>
+            <input id="rebalance-hours" type="number" min="1" max="12" step="0.5" value="3.5" />
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn-ghost sm" onclick="closeModal('rebalance-modal')">Cancel</button>
+          <button id="rebalance-submit-btn" class="btn-primary sm" onclick="runRebalancePreview()">👀 Preview New Schedule</button>
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- AI Topic Helper & Quick Quiz Modal -->
-  <div id="ai-modal" class="modal-backdrop no-print">
-    <div class="modal-card modal-lg">
+  <!-- MODAL: BLOCK INSPECTOR (CLICK ANY CALENDAR BLOCK) -->
+  <div id="block-modal" class="modal-backdrop no-print">
+    <div class="modal-box">
       <div class="modal-head">
-        <h3 id="ai-modal-title">LearnPulse AI Assistant</h3>
-        <button class="btn-icon" onclick="closeAiModal()">✕</button>
+        <div>
+          <span id="bm-badge" class="status-pill">P1 • Focus</span>
+          <h3 id="bm-title" style="margin-top:0.35rem;">Task Title</h3>
+        </div>
+        <button class="icon-btn" onclick="closeModal('block-modal')">✕</button>
       </div>
-      <div id="ai-modal-body" class="ai-modal-body"></div>
+
+      <div class="inspector-toggles">
+        <button id="bm-done-btn" class="toggle-chip" onclick="inspectorAction('done')">✅ Mark Done</button>
+        <button id="bm-lock-btn" class="toggle-chip" onclick="inspectorAction('lock')">🔒 Lock Time</button>
+        <button id="bm-def-btn" class="toggle-chip" onclick="inspectorAction('defense')">🛡️ Busy</button>
+      </div>
+
+      <div class="form-row-3" style="margin-top:0.75rem;">
+        <div>
+          <label>Start Time</label>
+          <input id="bm-start" type="time" />
+        </div>
+        <div>
+          <label>Minutes</label>
+          <input id="bm-dur" type="number" min="15" max="240" />
+        </div>
+        <div>
+          <label>Priority</label>
+          <select id="bm-prio">
+            <option value="P1">P1 Critical</option>
+            <option value="P2">P2 High</option>
+            <option value="P3">P3 Medium</option>
+            <option value="P4">P4 Low</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="inspector-ai-row">
+        <button class="btn-soft-indigo sm" onclick="openTopicHelpFromInspector()">💡 AI Notes</button>
+        <button class="btn-soft-teal sm" onclick="openTopicQuizFromInspector()">🧠 Quick Quiz</button>
+        <button class="btn-ghost sm" onclick="askBotFromInspector()">🤖 Ask PulseBot</button>
+      </div>
+
+      <div class="modal-foot between">
+        <button class="btn-ghost sm danger-txt" onclick="inspectorDelete()">🗑️ Delete Block</button>
+        <button class="btn-primary sm" onclick="inspectorSaveEdits()">Save Block</button>
+      </div>
     </div>
   </div>
 
-  <footer class="footer no-print">
-    <div class="wrap">
-      <strong>LearnPulse OS</strong> • Developed by <strong>Viswesh &amp; Team, Dept of CSE</strong>
+  <!-- MODAL: AI NOTES & QUIZ -->
+  <div id="ai-modal" class="modal-backdrop no-print">
+    <div class="modal-box modal-lg">
+      <div class="modal-head">
+        <h3 id="ai-modal-title">LearnPulse AI</h3>
+        <button class="icon-btn" onclick="closeModal('ai-modal')">✕</button>
+      </div>
+      <div id="ai-modal-body" class="ai-body"></div>
     </div>
-  </footer>
+  </div>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>
