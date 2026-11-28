@@ -11,27 +11,18 @@
 <script>
 try { var t = localStorage.getItem('lp_theme'); if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
 </script>
-<link rel="stylesheet" href="style.css?v=6">
+<link rel="stylesheet" href="style.css?v=8">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
 
 <div id="toast" class="toast" hidden></div>
 
-<!-- ============ SPLASH (auto sign-in check) ============ -->
-<section id="splash" class="splash" hidden>
-  <div class="splash-card">
-    <div class="spinner"></div>
-    <p id="splashText">Signing you in…</p>
-    <button id="splashSwitch" class="btn ghost sm" type="button">Use a different account</button>
-  </div>
-</section>
-
 <!-- ============ LOGIN ============ -->
 <section id="loginScreen" class="login-screen">
   <div class="login-card">
     <div class="brand"><span class="brand-logo">⚡</span><span class="brand-name">LearnPulse OS</span></div>
-    <p class="login-tag">Your 24/7 AI study planner. Smart time-blocking, habits, focus sessions and PulseBot, your built-in study coach.</p>
+    <p class="login-tag">Your 24/7 AI study planner. Smart time-blocking, habits, focus sessions, an AI question scanner and PulseBot, your built-in study coach.</p>
     <form id="loginForm" autocomplete="off" novalidate>
       <label class="field">
         <span>Student username</span>
@@ -44,7 +35,7 @@ try { var t = localStorage.getItem('lp_theme'); if (t === 'dark' || t === 'light
       <div id="loginError" class="form-error" hidden></div>
       <button id="loginBtn" class="btn primary block" type="submit">Sign in / Create account</button>
     </form>
-    <p class="hint">New here? Pick any username and a 4-digit PIN. Your account is created automatically the first time.</p>
+    <p class="hint">New here? Pick any username and a 4-digit PIN. Your account is created on this device the first time. Your data never leaves your browser.</p>
     <p class="login-foot">LearnPulse OS · Viswesh &amp; Team, Dept of CSE</p>
   </div>
 </section>
@@ -54,16 +45,17 @@ try { var t = localStorage.getItem('lp_theme'); if (t === 'dark' || t === 'light
 
   <nav id="nav" class="nav" aria-label="Main">
     <div class="nav-brand"><span class="brand-logo">⚡</span></div>
-    <button class="nav-btn active" data-view="calendar"><span class="ico">📅</span><span class="lbl">Calendar</span></button>
-    <button class="nav-btn" data-view="habits"><span class="ico">🔁</span><span class="lbl">Habits</span></button>
-    <button class="nav-btn" data-view="focus"><span class="ico">🎯</span><span class="lbl">Focus</span></button>
-    <button class="nav-btn" data-view="analytics"><span class="ico">📊</span><span class="lbl">Stats</span></button>
-    <button class="nav-btn" data-view="pulsebot"><span class="ico">🤖</span><span class="lbl">PulseBot</span></button>
-    <button class="nav-btn" data-view="settings"><span class="ico">⚙️</span><span class="lbl">Settings</span></button>
+    <button class="nav-btn active" data-view="calendar" type="button"><span class="ico">📅</span><span class="lbl">Plan</span></button>
+    <button class="nav-btn" data-view="habits" type="button"><span class="ico">🔁</span><span class="lbl">Habits</span></button>
+    <button class="nav-btn" data-view="focus" type="button"><span class="ico">🎯</span><span class="lbl">Focus</span></button>
+    <button class="nav-btn" data-view="analytics" type="button"><span class="ico">📊</span><span class="lbl">Stats</span></button>
+    <button class="nav-btn" data-view="scan" type="button"><span class="ico">📷</span><span class="lbl">Scan AI</span></button>
+    <button class="nav-btn" data-view="pulsebot" type="button"><span class="ico">🤖</span><span class="lbl">Bot</span></button>
+    <button class="nav-btn" data-view="settings" type="button"><span class="ico">⚙️</span><span class="lbl">Settings</span></button>
   </nav>
 
   <div class="content">
-    <header class="topbar">
+    <header id="topbar" class="topbar">
       <div class="tb-left">
         <span class="tb-logo">⚡</span>
         <span class="tb-title" id="viewTitle">Calendar</span>
@@ -128,8 +120,8 @@ try { var t = localStorage.getItem('lp_theme'); if (t === 'dark' || t === 'light
         <div id="calEmpty" class="empty" hidden>
           <div class="empty-ico">🗓️</div>
           <h3>No study plan yet</h3>
-          <p>Let AI build a time-blocked plan around your subjects, or start with a blank calendar.</p>
-          <button id="emptyCreateBtn" class="btn primary" type="button">✨ Create AI plan</button>
+          <p>Build a time-blocked plan around your subjects, or start with a blank calendar. No account or key needed.</p>
+          <button id="emptyCreateBtn" class="btn primary" type="button">✨ Create a plan</button>
         </div>
       </section>
 
@@ -197,6 +189,57 @@ try { var t = localStorage.getItem('lp_theme'); if (t === 'dark' || t === 'light
         </div>
       </section>
 
+      <!-- ========== SCAN AI ========== -->
+      <section id="view-scan" class="view">
+        <div class="view-head">
+          <div><h2>📷 AI Question Scanner</h2><p class="muted">Snap or upload a question. AI reads it and writes a clear solution. Needs your Groq key (Settings).</p></div>
+        </div>
+        <div class="scan-grid">
+          <div class="form-card scan-card">
+            <input id="scanCamInput" type="file" accept="image/*" capture="environment" hidden>
+            <input id="scanGalInput" type="file" accept="image/*" hidden>
+            <div class="scan-btns">
+              <button id="scanCamBtn" class="btn primary" type="button">📷 Take photo</button>
+              <button id="scanGalBtn" class="btn" type="button">🖼️ Upload image</button>
+            </div>
+            <div id="scanPreviewWrap" class="scan-preview" hidden>
+              <img id="scanPreview" alt="Question preview">
+              <button id="scanClearImg" class="btn ghost sm" type="button">✕ Remove image</button>
+            </div>
+            <div class="field">
+              <span>Answer style</span>
+              <div class="chips left" id="scanModeChips">
+                <button type="button" class="chip active" data-mode="steps">Step-by-step</button>
+                <button type="button" class="chip" data-mode="short">Short exam answer</button>
+                <button type="button" class="chip" data-mode="concept">Concept + steps</button>
+              </div>
+            </div>
+            <label class="field"><span>Subject (optional)</span><input id="scanSubject" type="text" maxlength="60" placeholder="e.g. Physics"></label>
+            <label class="field"><span>Extra note (optional)</span><input id="scanNote" type="text" maxlength="200" placeholder="e.g. Only solve part (b)"></label>
+            <button id="scanBtn" class="btn primary block" type="button">🔍 Solve with AI</button>
+          </div>
+          <div class="scan-side">
+            <div id="scanResultCard" class="form-card scan-result" hidden>
+              <div class="scan-result-head">
+                <h3>Solution</h3>
+                <div class="scan-result-actions">
+                  <button id="scanCopy" class="btn sm" type="button">📋 Copy</button>
+                  <button id="scanAsk" class="btn sm" type="button">🤖 Ask PulseBot</button>
+                </div>
+              </div>
+              <div id="scanResult" class="md"></div>
+            </div>
+            <div class="form-card">
+              <div class="scan-result-head">
+                <h3>Recent scans</h3>
+                <button id="scanClearHistory" class="btn ghost sm" type="button">Clear history</button>
+              </div>
+              <div id="scanHistory" class="scan-history"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- ========== PULSEBOT ========== -->
       <section id="view-pulsebot" class="view">
         <div class="view-head">
@@ -220,8 +263,10 @@ try { var t = localStorage.getItem('lp_theme'); if (t === 'dark' || t === 'light
 
       <!-- ========== SETTINGS ========== -->
       <section id="view-settings" class="view">
-        <div class="view-head"><div><h2>Scheduling &amp; defense</h2><p class="muted">Controls how LearnPulse places and protects your study time.</p></div></div>
+        <div class="view-head"><div><h2>Settings</h2><p class="muted">Scheduling, AI key and backups. Everything is saved on this device.</p></div></div>
+
         <form id="settingsForm" class="form-card" novalidate>
+          <h3 class="card-h">Scheduling &amp; defense</h3>
           <div class="grid2">
             <label class="field"><span>Study day starts</span><input id="setStart" type="time" step="900"></label>
             <label class="field"><span>Study day ends</span><input id="setEnd" type="time" step="900"></label>
@@ -237,8 +282,39 @@ try { var t = localStorage.getItem('lp_theme'); if (t === 'dark' || t === 'light
               <option value="reactive">Reactive: tasks stay 🔓 Free until you defend them</option>
             </select>
           </label>
-          <button id="saveSettingsBtn" class="btn primary" type="submit">Save settings</button>
+          <button id="saveSettingsBtn" class="btn primary" type="submit">Save scheduling</button>
         </form>
+
+        <form id="aiForm" class="form-card" novalidate>
+          <h3 class="card-h">AI connection (Groq)</h3>
+          <p class="muted small mb">Your key is stored only in this browser on this device. It is sent only to Groq, never to us, and it is not included in backups. Get a free key at console.groq.com.</p>
+          <label class="field">
+            <span>Groq API key</span>
+            <div class="inline-input">
+              <input id="setGroqKey" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="gsk_…">
+              <button id="keyToggle" class="btn sm" type="button">Show</button>
+            </div>
+          </label>
+          <label class="field"><span>Vision model (for Scan AI)</span><input id="setVisionModel" type="text" autocapitalize="none" spellcheck="false" placeholder="meta-llama/llama-4-scout-17b-16e-instruct"></label>
+          <div class="modal-actions">
+            <button id="saveAiBtn" class="btn primary" type="submit">Save AI settings</button>
+            <button id="testKeyBtn" class="btn" type="button">Test connection</button>
+            <button id="removeKeyBtn" class="btn ghost danger-ghost" type="button">Remove key</button>
+          </div>
+          <div id="aiStatus" class="muted small status-line"></div>
+        </form>
+
+        <div class="form-card">
+          <h3 class="card-h">Backup &amp; transfer</h3>
+          <p class="muted small mb">Export your plans, habits, streaks, scans and chat as a file. Import it on another phone or laptop to carry everything over.</p>
+          <input id="importFile" type="file" accept="application/json,.json" hidden>
+          <div class="modal-actions">
+            <button id="exportBackupBtn" class="btn primary" type="button">⬇ Export backup (.json)</button>
+            <button id="importBackupBtn" class="btn" type="button">⬆ Import backup (.json)</button>
+          </div>
+        </div>
+
+        <p class="about">LearnPulse OS · Viswesh &amp; Team, Dept of CSE</p>
       </section>
 
     </main>
@@ -312,7 +388,7 @@ try { var t = localStorage.getItem('lp_theme'); if (t === 'dark' || t === 'light
   </div>
 </div>
 
-<!-- ============ MODAL: AI PLAN ============ -->
+<!-- ============ MODAL: CREATE PLAN ============ -->
 <div id="planModal" class="modal" hidden>
   <div class="modal-backdrop" data-close></div>
   <div class="modal-card wide">
@@ -333,9 +409,10 @@ try { var t = localStorage.getItem('lp_theme'); if (t === 'dark' || t === 'light
           <label class="field"><span>Study hours per day</span><input id="plHours" type="number" min="0.5" max="10" step="0.5" value="3"></label>
           <label class="field"><span>Session length (min)</span><input id="plSession" type="number" min="20" max="120" step="5" value="50"></label>
         </div>
+        <div id="planAiNote" class="muted small mb"></div>
         <div id="planError" class="form-error" hidden></div>
         <div class="modal-actions">
-          <button id="planGenBtn" class="btn primary" type="submit">Generate with AI</button>
+          <button id="planGenBtn" class="btn primary" type="submit">Generate plan</button>
           <button id="blankPlanBtn" class="btn" type="button">Start blank</button>
         </div>
       </form>
@@ -350,3 +427,91 @@ try { var t = localStorage.getItem('lp_theme'); if (t === 'dark' || t === 'light
     <div class="modal-head"><h3 id="notesTitle">AI Notes</h3><button class="icon-btn" type="button" data-close aria-label="Close">✕</button></div>
     <div class="modal-body">
       <div id="notesBody" class="md"></div>
+      <div class="modal-actions"><button id="notesRefresh" class="btn sm" type="button">↻ Regenerate</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: QUIZ ============ -->
+<div id="quizModal" class="modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-card wide">
+    <div class="modal-head"><h3 id="quizTitle">Quick quiz</h3><button class="icon-btn" type="button" data-close aria-label="Close">✕</button></div>
+    <div class="modal-body"><div id="quizBody"></div></div>
+  </div>
+</div>
+
+<!-- ============ MODAL: HABIT ============ -->
+<div id="habitModal" class="modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-card">
+    <div class="modal-head"><h3 id="habitHeading">New habit</h3><button class="icon-btn" type="button" data-close aria-label="Close">✕</button></div>
+    <div class="modal-body">
+      <form id="habitForm" novalidate>
+        <label class="field"><span>Habit name</span><input id="hbName" type="text" maxlength="60" placeholder="e.g. Morning revision"></label>
+        <div class="grid2">
+          <label class="field"><span>Duration (min)</span><input id="hbDuration" type="number" min="5" max="240" step="5" value="30"></label>
+          <label class="field"><span>Defense</span>
+            <select id="hbDefense"><option value="busy">🛡️ Busy</option><option value="free">🔓 Free</option></select>
+          </label>
+          <label class="field"><span>Earliest start</span><input id="hbEarliest" type="time" step="300" value="07:00"></label>
+          <label class="field"><span>Ideal start</span><input id="hbIdeal" type="time" step="300" value="08:00"></label>
+          <label class="field"><span>Latest finish</span><input id="hbLatest" type="time" step="300" value="10:00"></label>
+        </div>
+        <div class="field">
+          <span>Days</span>
+          <div id="hbDays" class="day-picks">
+            <label class="day-pick"><input type="checkbox" value="0" checked><span>Mon</span></label>
+            <label class="day-pick"><input type="checkbox" value="1" checked><span>Tue</span></label>
+            <label class="day-pick"><input type="checkbox" value="2" checked><span>Wed</span></label>
+            <label class="day-pick"><input type="checkbox" value="3" checked><span>Thu</span></label>
+            <label class="day-pick"><input type="checkbox" value="4" checked><span>Fri</span></label>
+            <label class="day-pick"><input type="checkbox" value="5" checked><span>Sat</span></label>
+            <label class="day-pick"><input type="checkbox" value="6" checked><span>Sun</span></label>
+          </div>
+        </div>
+        <div id="habitError" class="form-error" hidden></div>
+        <div class="modal-actions"><button id="habitSave" class="btn primary" type="submit">Save habit</button></div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: GROQ KEY PROMPT ============ -->
+<div id="keyModal" class="modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-card small">
+    <div class="modal-head"><h3>🔑 Add your Groq key</h3><button class="icon-btn" type="button" data-close aria-label="Close">✕</button></div>
+    <div class="modal-body">
+      <p class="muted small mb">AI features need a free Groq API key. It is saved only in this browser and sent only to Groq. Get one at console.groq.com.</p>
+      <label class="field"><span>Groq API key</span><input id="keyInput" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="gsk_…"></label>
+      <div id="keyError" class="form-error" hidden></div>
+      <div class="modal-actions">
+        <button id="keySave" class="btn primary" type="button">Save &amp; continue</button>
+        <button id="keyCancel" class="btn" type="button" data-close>Not now</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: CONFIRM ============ -->
+<div id="confirmModal" class="modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-card small">
+    <div class="modal-head"><h3 id="confirmTitle">Are you sure?</h3><button class="icon-btn" type="button" data-close aria-label="Close">✕</button></div>
+    <div class="modal-body">
+      <p id="confirmText" class="muted"></p>
+      <div class="modal-actions">
+        <button id="confirmOk" class="btn danger" type="button">Confirm</button>
+        <button id="confirmCancel" class="btn" type="button" data-close>Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ PRINT VIEW ============ -->
+<div id="printArea" class="print-area" aria-hidden="true"></div>
+
+<script src="app.js?v=8"></script>
+</body>
+</html>
