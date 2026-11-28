@@ -1,4 +1,4 @@
-/* LearnPulse OS - style.css (v6)
+/* LearnPulse OS - style.css (v7 with AI Question Scanner)
    Viswesh & Team, Dept of CSE */
 
 :root {
@@ -192,15 +192,17 @@ h1, h2, h3, p { margin: 0; }
   position: fixed; z-index: 100; left: 0; top: 0; bottom: 0; width: var(--nav-w);
   background: var(--surface); border-right: 1px solid var(--border);
   display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 12px 8px;
+  overflow-y: auto;
 }
 .nav-brand { display: flex; justify-content: center; margin-bottom: 10px; }
 .nav-btn {
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 10px 4px; border: 0; border-radius: 12px; background: transparent;
+  padding: 9px 4px; border: 0; border-radius: 12px; background: transparent;
   color: var(--muted); cursor: pointer; font-weight: 600; font-size: 11.5px;
   -webkit-tap-highlight-color: transparent;
 }
 .nav-btn .ico { font-size: 20px; line-height: 1; }
+.nav-btn .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .nav-btn:hover { background: var(--surface-2); }
 .nav-btn.active { background: var(--primary-soft); color: var(--primary-600); }
 :root[data-theme="dark"] .nav-btn.active { color: var(--primary); }
@@ -252,7 +254,7 @@ h1, h2, h3, p { margin: 0; }
 
 .preview-banner {
   position: sticky; top: var(--topbar-h); z-index: 80;
-  height: var(--banner-h-real, 60px); overflow: hidden;
+  min-height: var(--banner-h-real, 60px); overflow: hidden;
   display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
   background: #fffbeb; border: 1px solid #fcd34d; color: #78350f;
   border-radius: 12px; padding: 8px 12px; margin-bottom: 10px; font-size: 13px;
@@ -320,7 +322,7 @@ h1, h2, h3, p { margin: 0; }
   border-left-width: 1.5px; color: var(--muted); cursor: default; box-shadow: none;
   font-size: 10.5px; padding: 0 6px; display: flex; align-items: center;
 }
-.blk-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.blk-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; padding-right: 34px; }
 .blk-time { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
 .blk-icons { position: absolute; top: 2px; right: 4px; font-size: 11px; }
 .blk.short { padding: 0 6px; display: flex; align-items: center; gap: 6px; }
@@ -391,7 +393,7 @@ h1, h2, h3, p { margin: 0; }
 .focus-stats span { font-size: 12px; color: var(--muted); }
 
 /* ---------- Analytics ---------- */
-.goal-card, .chart-card, .form-card {
+.goal-card, .chart-card, .form-card, .scan-card {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--shadow); padding: 16px;
 }
@@ -411,6 +413,46 @@ h1, h2, h3, p { margin: 0; }
 .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .chart-card h3 { font-size: 15px; margin-bottom: 10px; }
 .chart-box { position: relative; height: 260px; }
+
+/* ---------- AI Question Scanner ---------- */
+.scan-layout { display: grid; grid-template-columns: 1fr; gap: 14px; max-width: 960px; }
+.scan-drop {
+  border: 2px dashed var(--border); border-radius: var(--radius);
+  background: var(--surface-2); padding: 26px 16px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  transition: border-color .15s, background .15s;
+}
+.scan-drop.drag { border-color: var(--primary); background: var(--primary-soft); }
+.scan-ico { font-size: 36px; line-height: 1; }
+.scan-lead { font-weight: 600; font-size: 15px; }
+.scan-pick-btns { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 8px; }
+.scan-preview {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: hidden; background: var(--surface-2);
+}
+.scan-preview img {
+  display: block; width: 100%; max-height: 300px; object-fit: contain; background: #0f172a;
+}
+.scan-preview-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px;
+}
+.scan-chips { justify-content: flex-start; margin-bottom: 0; }
+.scan-res-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.scan-res-actions { display: flex; gap: 8px; }
+.scan-hist-wrap { margin-top: 20px; max-width: 960px; }
+.scan-hist-wrap > h3 { font-size: 15px; margin-bottom: 10px; color: var(--muted); }
+.scan-history { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.scan-item {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px; box-shadow: var(--shadow); cursor: pointer; text-align: left;
+  display: flex; flex-direction: column; gap: 4px; transition: border-color .15s;
+}
+.scan-item:hover { border-color: var(--primary); }
+.scan-item-title { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scan-item-meta { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
 
 /* ---------- PulseBot ---------- */
 .chat-card {
@@ -544,11 +586,12 @@ h1, h2, h3, p { margin: 0; }
   .nav {
     top: auto; right: 0; width: 100%; height: calc(var(--dock-h) + var(--safe-b));
     flex-direction: row; justify-content: space-around; gap: 0;
-    padding: 4px 4px var(--safe-b); border-right: 0; border-top: 1px solid var(--border);
+    padding: 4px 2px var(--safe-b); border-right: 0; border-top: 1px solid var(--border);
+    overflow-y: visible;
   }
   .nav-brand { display: none; }
-  .nav-btn { flex: 1; min-width: 0; padding: 6px 2px; gap: 2px; font-size: 10.5px; border-radius: 10px; }
-  .nav-btn .ico { font-size: 19px; }
+  .nav-btn { flex: 1; min-width: 0; padding: 6px 1px; gap: 2px; font-size: 9.5px; border-radius: 10px; }
+  .nav-btn .ico { font-size: 18px; }
   .tb-logo { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, #14b8a6, #0d9488); color: #fff; font-size: 16px; }
   .topbar { padding: 0 10px; }
   .tb-right { gap: 6px; }
@@ -596,7 +639,6 @@ h1, h2, h3, p { margin: 0; }
 
 @media (min-width: 900px) {
   :root { --banner-h-real: 60px; }
-  .cal-head { top: var(--topbar-h); }
 }
 
 body.previewing { --banner-h: 60px; }
