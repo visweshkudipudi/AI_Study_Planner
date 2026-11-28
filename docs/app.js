@@ -178,6 +178,15 @@ function save() {
   } else if (ok) storageWarned = false;
 }
 
+function storageOk() {
+  try {
+    localStorage.setItem('lp_probe', '1');
+    const ok = localStorage.getItem('lp_probe') === '1';
+    localStorage.removeItem('lp_probe');
+    return ok;
+  } catch (e) { return false; }
+}
+
 function getKey() { return (lsGet(K.key + (S.uid || '')) || '').trim(); }
 function setKey(v) { if (v) lsSet(K.key + S.uid, v.trim()); else lsDel(K.key + S.uid); }
 
@@ -1875,7 +1884,9 @@ function wire() {
     const btn = $('loginBtn');
     btn.classList.add('loading');
     try {
+      if (!storageOk()) bad('Your browser is blocking storage, so accounts cannot be saved. Turn off private/incognito mode or "block all cookies", or open the site in Chrome/Safari directly (not inside another app).');
       const isNew = await doLogin($('loginUser').value, $('loginPin').value.trim());
+      if (lsGet(K.acct + S.uid) === null) bad('Could not save your account in this browser. Check storage settings and try again.');
       $('loginPin').value = '';
       bootApp();
       if (isNew) toast('Welcome to LearnPulse OS! Create your first plan with ✨ AI Plan.', 'ok');
@@ -2055,22 +2066,4 @@ function wire() {
   $('chatChips').addEventListener('click', (e) => { const c = e.target.closest('.chip'); if (c) sendChat(c.dataset.prompt); });
   $('chatClear').addEventListener('click', () => guard(async () => {
     const ok = await confirmBox('Clear chat?', 'Your saved PulseBot conversation will be deleted from this device.', 'Clear');
-    if (!ok) return;
-    S.doc.chat = [];
-    save();
-    renderChat();
-  }));
-
-  /* ----- housekeeping ----- */
-  let rt = null;
-  window.addEventListener('resize', () => {
-    clearTimeout(rt);
-    rt = setTimeout(() => {
-      if (S.doc && S.view === 'calendar') { renderCalendar(); syncBannerHeight(); }
-    }, 200);
-  });
-  setInterval(() => { if (S.doc && S.view === 'calendar') updateNowLine(); }, 60000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && S.doc && S.view === 'calendar') updateNowLine(); });
-}
-
-/* ======================= START ========
+    if (!ok) re
